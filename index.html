@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wardrobe AI</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--primary:#2563eb;--bg:#f5f5f5;--surface:#fff;--text:#1a1a1a;--muted:#666;--border:#e0e0e0;--ok:#2e7d32;--warn:#e65100;--danger:#c62828}
@@ -76,9 +77,11 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
 
 <div class="screen active" id="s-key">
   <div class="header"><h1>Wardrobe AI</h1><p>OpenRouter key</p></div>
-  <div class="box info">Get a key at <b>openrouter.ai/keys</b>. Stored in this browser only.</div>
-  <label>OpenRouter API key</label>
+  <div class="box info">Add either or both. Keys stay in this browser. With both, you can pick a different provider for each job and fall back when one hits a quota.</div>
+  <label>OpenRouter key <span class="muted">(openrouter.ai/keys)</span></label>
   <input type="password" id="orkey" placeholder="sk-or-v1-...">
+  <label>Google AI Studio key <span class="muted">(aistudio.google.com/apikey)</span></label>
+  <input type="password" id="gkeyai" placeholder="AIza...">
   <div id="key-status"></div>
   <button class="primary" onclick="loadModels()">Fetch my models →</button>
   <button onclick="go('s-catalog')" id="skip-btn" style="display:none">Skip — go to my wardrobe</button>
@@ -113,6 +116,13 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
     <option value="4">4 — recommended</option>
     <option value="6">6 — fastest, may hit 429s</option>
   </select>
+  <label>Google OAuth client ID <span class="muted">(optional — enables Drive backup)</span></label>
+  <input type="text" id="gclient" placeholder="xxxxx.apps.googleusercontent.com">
+  <label>What to back up</label>
+  <select id="bkscope">
+    <option value="full">Everything including photos — larger upload, restores completely</option>
+    <option value="light">Descriptions and anchor only — tiny, you re-add photos</option>
+  </select>
   <button class="primary" onclick="saveModels()">Continue →</button>
 </div>
 
@@ -133,12 +143,14 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
   <button class="back" onclick="go('s-anchor')">← Back to anchor</button>
   <div class="header"><h1>Your wardrobe</h1><p id="catalog-sub">Saved in this browser</p></div>
   <div id="storage-note"></div>
+  <div id="diag"></div>
 
   <div class="row" style="margin-bottom:.6rem">
     <button onclick="document.getElementById('file-in').click()">+ Add photos</button>
     <button onclick="go('s-details')">Descriptions</button>
   </div>
   <input type="file" id="file-in" accept="image/*" multiple style="display:none" onchange="addPhotos()">
+  <input type="file" id="attach-in" accept="image/*" style="display:none" onchange="attachPhotoFile()">
 
   <input type="text" id="search" placeholder="Search colour, type, material…" oninput="renderCatalog()" style="margin-bottom:.5rem">
   <div class="chips" id="type-chips"></div>
@@ -169,11 +181,20 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
     <button onclick="describeMissing()">Describe pending</button>
     <button onclick="retryFailed()" id="retry-btn">Retry failed</button>
   </div>
-  <div class="row" style="margin-bottom:.5rem">
-    <button onclick="exportCatalog()">Export backup</button>
-    <button onclick="document.getElementById('import-in').click()">Import backup</button>
+  <div id="drive-panel" class="card" style="margin-top:.5rem">
+    <b style="font-size:13px">Google Drive backup</b>
+    <div id="drive-status" class="muted" style="margin:.35rem 0 .6rem">Not connected.</div>
+    <div id="drive-controls"></div>
   </div>
-  <input type="file" id="import-in" accept="application/json" style="display:none" onchange="importCatalog()">
+  <div class="card" style="margin-top:.5rem">
+    <b style="font-size:13px">Save to Files / iCloud</b>
+    <div id="file-status" class="muted" style="margin:.35rem 0 .6rem">Manual — tap to save a snapshot.</div>
+    <div class="row">
+      <button class="sm" onclick="exportCatalog()" id="export-btn">Save a copy</button>
+      <button class="sm" onclick="document.getElementById('import-in').click()">Restore from a file</button>
+    </div>
+  </div>
+  <input type="file" id="import-in" accept="application/json,.json" style="display:none" onchange="importCatalog()">
   <div class="row">
     <button onclick="go('s-models')">Change models</button>
     <button onclick="clearCatalog()">Clear wardrobe</button>
@@ -220,9 +241,9 @@ const FRAME='Full-body standing fashion lookbook photograph, framed head to toe.
 const MAXEDGE=1024, THUMB=220, JPEGQ=0.82;
 
 const go=id=>{document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active');
-  if(id==='s-details')showDetails(); if(id==='s-catalog')renderCatalog()};
+  if(id==='s-details')showDetails(); if(id==='s-catalog'){renderCatalog();driveControls()}};
 const ls=(k,v)=>v===undefined?(localStorage.getItem(k)||''):localStorage.setItem(k,v);
-const okey=()=>ls('or-key'),visionModel=()=>ls('or-vision'),textModel=()=>ls('or-text'),imageModel=()=>ls('or-image');
+const okey=()=>ls('or-key');
 const aspect=()=>ls('or-aspect')||'3:4',mode=()=>ls('mode')||'strict',renderSrc=()=>ls('or-rendersrc')||'photos';
 const concurrency=()=>parseInt(ls('or-conc')||'4',10);
 
@@ -339,7 +360,8 @@ async function storageBanner(){
 }
 
 async function boot(){
-  if(okey())document.getElementById('orkey').value=okey();
+  if(orKey())document.getElementById('orkey').value=orKey();
+  if(gaiKey())document.getElementById('gkeyai').value=gaiKey();
   setMode(mode());
   try{
     await ready();
@@ -353,19 +375,130 @@ async function boot(){
   }
   if(S.anchor)document.getElementById('anchor-tile').innerHTML='<img src="'+S.anchor+'">';
   renderCatalog();
-  if(S.items.length&&okey()&&textModel())document.getElementById('skip-btn').style.display='block';
+  if(S.items.length&&(orKey()||gaiKey())&&ls('or-text'))document.getElementById('skip-btn').style.display='block';
   if(navigator.storage&&navigator.storage.persist){try{await navigator.storage.persist()}catch(e){}}
   storageBanner();
+  driveControls();
 }
 window.addEventListener('DOMContentLoaded',boot);
 
 /* ============ api ============ */
-async function or(body){
-  const r=await fetch(OR+'/chat/completions',{method:'POST',
-    headers:{'Authorization':'Bearer '+okey(),'Content-Type':'application/json',
-             'HTTP-Referer':location.origin||'https://localhost','X-Title':'Wardrobe AI'},
-    body:JSON.stringify(body)});
-  const d=await r.json().catch(()=>({}));
+/* ================= providers =================
+   A slot value is "<provider>::<model id>", so each of the three jobs can sit
+   on a different service. ask() takes one neutral request shape and renders it
+   into whichever wire format that provider speaks. */
+const GEMAPI='https://generativelanguage.googleapis.com/v1beta';
+const PROVNAME={or:'OpenRouter',g:'Google AI Studio'};
+const orKey=()=>ls('or-key'), gaiKey=()=>ls('gai-key');
+function slotOf(v){
+  const i=String(v||'').indexOf('::');
+  return i<0?{p:'or',id:String(v||'')}:{p:v.slice(0,i),id:v.slice(i+2)};
+}
+const slotLabel=sl=>sl.id?(PROVNAME[sl.p]||sl.p)+' · '+sl.id:'(none)';
+const keyFor=p=>p==='g'?gaiKey():orKey();
+
+/* Gemini's responseSchema follows an OpenAPI subset and rejects the
+   additionalProperties / strict keywords that OpenAI-style schemas carry. */
+function geminiSchema(sc){
+  if(!sc||typeof sc!=='object')return sc;
+  if(Array.isArray(sc))return sc.map(geminiSchema);
+  const out={};
+  for(const k of Object.keys(sc)){
+    if(k==='additionalProperties'||k==='strict')continue;
+    out[k]=geminiSchema(sc[k]);
+  }
+  return out;
+}
+
+async function ask(sl,req,trace){
+  if(!sl.id)throw new Error('No model selected for this step.');
+  if(!keyFor(sl.p))throw new Error('No '+(PROVNAME[sl.p]||sl.p)+' key saved.');
+  return sl.p==='g'?askGoogle(sl,req,trace):askOR(sl,req,trace);
+}
+
+async function askOR(sl,req,trace){
+  const content=(req.parts||[]).map(pt=>pt.image
+    ?{type:'image_url',image_url:{url:pt.image}}
+    :{type:'text',text:pt.text});
+  const body={model:sl.id,messages:[{role:'user',content:content}]};
+  if(req.temperature!==undefined)body.temperature=req.temperature;
+  if(req.maxTokens)body.max_tokens=req.maxTokens;
+  if(req.json&&typeof req.json==='object')
+    body.response_format={type:'json_schema',json_schema:{name:'out',strict:true,schema:req.json}};
+  else if(req.json)body.response_format={type:'json_object'};
+  if(req.wantImage){
+    const meta=S.meta[sl.p+'::'+sl.id]||{out:[]};
+    body.modalities=(meta.out||[]).includes('text')?['image','text']:['image'];
+    if(req.aspect)body.image_config={aspect_ratio:req.aspect};
+  }
+  const d=await orFetch(body,trace);
+  const m=((d.choices||[])[0]||{}).message||{};
+  let c=m.content;
+  if(Array.isArray(c))c=c.map(x=>typeof x==='string'?x:(x&&(x.text||x.content))||'').join('');
+  if(!c||!String(c).trim())c=m.reasoning||m.reasoning_content||'';
+  const im=(m.images||[])[0];
+  return {text:String(c||''),
+          image:im?((im.image_url&&im.image_url.url)||(im.imageUrl&&im.imageUrl.url)||im.url||null):null,
+          finish:((d.choices||[])[0]||{}).finish_reason||''};
+}
+
+async function askGoogle(sl,req,trace){
+  const parts=(req.parts||[]).map(pt=>{
+    if(!pt.image)return {text:pt.text};
+    const m=String(pt.image).match(/^data:([^;]+);base64,(.+)$/);
+    return m?{inline_data:{mime_type:m[1],data:m[2]}}:{text:'(unreadable image)'};
+  });
+  const cfg={};
+  if(req.temperature!==undefined)cfg.temperature=req.temperature;
+  if(req.maxTokens)cfg.maxOutputTokens=req.maxTokens;
+  if(req.json){
+    cfg.responseMimeType='application/json';
+    if(typeof req.json==='object')cfg.responseSchema=geminiSchema(req.json);
+  }
+  if(req.wantImage){
+    cfg.responseModalities=['TEXT','IMAGE'];
+    if(req.aspect)cfg.imageConfig={aspectRatio:req.aspect};
+  }
+  const url=GEMAPI+'/models/'+encodeURIComponent(sl.id)+':generateContent?key='+encodeURIComponent(gaiKey());
+  const started=Date.now();
+  let r,d;
+  try{
+    r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{role:'user',parts:parts}],generationConfig:cfg})});
+  }catch(e){
+    if(trace)trace.push({status:'network',ms:Date.now()-started,model:sl.id,format:'google',body:e.message});
+    throw e;
+  }
+  d=await r.json().catch(()=>({}));
+  if(trace)trace.push({status:r.status,ms:Date.now()-started,model:'google · '+sl.id,
+    format:req.json?'json':(req.wantImage?'image':'none'),body:JSON.stringify(d).slice(0,900)});
+  if(r.status===429){const e=new Error('rate limited');e.retry=true;throw e}
+  if(!r.ok||d.error)throw new Error((d.error&&(d.error.message||d.error))||('HTTP '+r.status));
+  const cand=(d.candidates||[])[0]||{};
+  const cparts=(cand.content&&cand.content.parts)||[];
+  const img=cparts.map(x=>x.inlineData||x.inline_data).filter(Boolean)[0];
+  return {text:cparts.map(x=>x.text).filter(Boolean).join(''),
+          image:img?('data:'+(img.mimeType||img.mime_type||'image/png')+';base64,'+img.data):null,
+          finish:cand.finishReason||''};
+}
+
+async function orFetch(body,trace){
+  const started=Date.now();
+  let r,d;
+  try{
+    r=await fetch(OR+'/chat/completions',{method:'POST',
+      headers:{'Authorization':'Bearer '+orKey(),'Content-Type':'application/json',
+               'HTTP-Referer':location.origin||'https://localhost','X-Title':'Wardrobe AI'},
+      body:JSON.stringify(body)});
+  }catch(e){
+    if(trace)trace.push({status:'network',ms:Date.now()-started,body:e.message});
+    throw e;
+  }
+  d=await r.json().catch(()=>({}));
+  if(trace)trace.push({status:r.status,ms:Date.now()-started,
+    model:body.model,
+    format:(body.response_format&&body.response_format.type)||'none',
+    body:JSON.stringify(d).slice(0,900)});
   if(r.status===429){const e=new Error('rate limited');e.retry=true;throw e}
   if(!r.ok||d.error)throw new Error((d.error&&(d.error.message||d.error))||('HTTP '+r.status));
   return d;
@@ -420,41 +553,103 @@ const comboValue=id=>(COMBO[id]||{}).value||'';
 
 async function loadModels(){
   const k=document.getElementById('orkey').value.trim();
+  const g=document.getElementById('gkeyai').value.trim();
   const status=document.getElementById('key-status');
-  if(!k){status.innerHTML='<div class="box warn">Enter your key first.</div>';return}
-  ls('or-key',k);status.innerHTML='<div class="box info">Fetching model list…</div>';
-  try{
-    const r=await fetch(OR+'/models',{headers:{'Authorization':'Bearer '+k}});
-    if(!r.ok){status.innerHTML='<div class="box warn">HTTP '+r.status+'</div>';return}
-    const d=await r.json();
-    const models=(d.data||[]).map(m=>{const a=m.architecture||{};
-      return{id:m.id,inp:a.input_modalities||(a.modality?[a.modality]:[]),out:a.output_modalities||[],
-             prompt:parseFloat((m.pricing||{}).prompt||'0'),image:parseFloat((m.pricing||{}).image||'0')}});
-    S.meta={};models.forEach(m=>S.meta[m.id]=m);
-    const imgs=models.filter(m=>m.out.includes('image')).sort((a,b)=>a.image-b.image||a.id.localeCompare(b.id));
-    const vis=models.filter(m=>m.inp.includes('image')&&!m.out.includes('image')).sort((a,b)=>a.prompt-b.prompt||a.id.localeCompare(b.id));
-    const txt=models.filter(m=>m.out.includes('text')&&!m.out.includes('image')).sort((a,b)=>a.prompt-b.prompt||a.id.localeCompare(b.id));
-    S.imageModels=imgs.map(m=>m.id);
-    makeCombo('combo-vision',vis.map(m=>m.id),visionModel());
-    makeCombo('combo-text',txt.map(m=>m.id),textModel());
-    makeCombo('combo-image',S.imageModels,imageModel(),priceNote);priceNote();
-    document.getElementById('model-count').innerHTML=
-      models.length+' models — '+vis.length+' read photos, '+txt.length+' style from text, '+imgs.length+' render.<br>Cheapest first.';
-    document.getElementById('aspect').value=aspect();
-    document.getElementById('rendersrc').value=renderSrc();
-    document.getElementById('concurrency').value=String(concurrency());
-    go('s-models');
-  }catch(e){status.innerHTML='<div class="box warn">Network error: '+e.message+'</div>'}
+  if(!k&&!g){status.innerHTML='<div class="box warn">Add at least one key.</div>';return}
+  ls('or-key',k);ls('gai-key',g);
+  status.innerHTML='<div class="box info">Fetching model lists…</div>';
+  const models=[];const notes=[];
+
+  if(k){
+    try{
+      const r=await fetch(OR+'/models',{headers:{'Authorization':'Bearer '+k}});
+      if(r.ok){
+        const d=await r.json();
+        (d.data||[]).forEach(m=>{
+          const a=m.architecture||{};
+          models.push({key:'or::'+m.id,p:'or',id:m.id,
+            inp:a.input_modalities||(a.modality?[a.modality]:[]),
+            out:a.output_modalities||['text'],
+            prompt:parseFloat((m.pricing||{}).prompt||'0'),
+            image:parseFloat((m.pricing||{}).image||'0')});
+        });
+      }else notes.push('OpenRouter: HTTP '+r.status);
+    }catch(e){notes.push('OpenRouter: '+e.message)}
+  }
+
+  if(g){
+    try{
+      const r=await fetch(GEMAPI+'/models?key='+encodeURIComponent(g));
+      if(r.ok){
+        const d=await r.json();
+        (d.models||[]).forEach(m=>{
+          const id=m.name.replace(/^models\//,'');
+          const methods=m.supportedGenerationMethods||m.supported_generation_methods||[];
+          if(!methods.includes('generateContent'))return;
+          if(/embedding|aqa/i.test(id))return;
+          const makesImages=/image|imagen|banana/i.test(id);
+          models.push({key:'g::'+id,p:'g',id:id,
+            /* Gemini chat models all accept image input */
+            inp:['text','image'],
+            out:makesImages?['text','image']:['text'],
+            prompt:0,image:0});
+        });
+      }else{
+        const e=await r.json().catch(()=>({}));
+        notes.push('Google: '+((e.error&&e.error.message)||('HTTP '+r.status)));
+      }
+    }catch(e){notes.push('Google: '+e.message)}
+  }
+
+  if(!models.length){
+    status.innerHTML='<div class="box warn">No models available.<br>'+notes.map(escapeHtml).join('<br>')+'</div>';
+    return;
+  }
+
+  S.meta={};models.forEach(m=>S.meta[m.key]=m);
+  const rank=(a,b)=>(a.p===b.p?0:(a.p==='or'?-1:1))||a.id.localeCompare(b.id);
+  const imgs=models.filter(m=>m.out.includes('image')).sort((a,b)=>a.image-b.image||rank(a,b));
+  const vis=models.filter(m=>m.inp.includes('image')&&!m.out.includes('image')).sort((a,b)=>a.prompt-b.prompt||rank(a,b));
+  const txt=models.filter(m=>m.out.includes('text')&&!m.out.includes('image')).sort((a,b)=>a.prompt-b.prompt||rank(a,b));
+
+  S.imageModels=imgs.map(m=>m.key);
+  makeCombo('combo-vision',vis.map(m=>m.key),ls('or-vision'));
+  makeCombo('combo-text',txt.map(m=>m.key),ls('or-text'));
+  makeCombo('combo-image',S.imageModels,ls('or-image'),priceNote);
+  priceNote();
+
+  const counts=['or','g'].filter(pp=>models.some(m=>m.p===pp))
+    .map(pp=>models.filter(m=>m.p===pp).length+' from '+PROVNAME[pp]).join(', ');
+  document.getElementById('model-count').innerHTML=
+    counts+'.<br>'+vis.length+' read photos, '+txt.length+' style from text, '+imgs.length+' render.'+
+    '<br>Type to filter — start with <b>or::</b> or <b>g::</b> to narrow to one provider.'+
+    (notes.length?'<br><b>'+notes.map(escapeHtml).join('<br>')+'</b>':'');
+  document.getElementById('aspect').value=aspect();
+  document.getElementById('rendersrc').value=renderSrc();
+  document.getElementById('concurrency').value=String(concurrency());
+  document.getElementById('gclient').value=ls('g-client');
+  document.getElementById('bkscope').value=ls('bk-scope')||'full';
+  go('s-models');
 }
-function priceNote(){const m=S.meta[comboValue('combo-image')];
-  document.getElementById('price-note').textContent=!m?'':(m.image?('About $'+m.image.toFixed(4)+' per generated image.'):'Per-image pricing not listed.')}
+function priceNote(){
+  const m=S.meta[comboValue('combo-image')];
+  const el=document.getElementById('price-note');
+  if(!m){el.textContent='';return}
+  el.textContent=m.p==='g'
+    ?'Google AI Studio — billed against your own Gemini quota. Pro image models have no free tier.'
+    :(m.image?('About $'+m.image.toFixed(4)+' per generated image.'):'Per-image pricing not listed.');
+}
 function saveModels(){
   const v=comboValue('combo-vision'),t=comboValue('combo-text');
   if(!v||!t){alert('Pick an analyst and a stylist.');return}
+  if(/^or::.*:free$/.test(t)&&!confirm(slotLabel(slotOf(t))+' is a free shared endpoint. These often return empty responses and ignore structured output, which breaks styling. Use it anyway?'))return;
   ls('or-vision',v);ls('or-text',t);ls('or-image',comboValue('combo-image'));
   ls('or-aspect',document.getElementById('aspect').value);
   ls('or-rendersrc',document.getElementById('rendersrc').value);
   ls('or-conc',document.getElementById('concurrency').value);
+  ls('g-client',document.getElementById('gclient').value.trim());
+  ls('bk-scope',document.getElementById('bkscope').value);
+  document.getElementById('diag').innerHTML='';
   go('s-anchor');
 }
 
@@ -470,6 +665,7 @@ function setAnchor(){
       try{
         await dbPut('meta',{k:'anchor',v:url});
         note.innerHTML='<div class="box ok">Anchor saved ('+kb(url)+' KB).</div>';
+        scheduleBackup();
       }catch(e){
         note.innerHTML='<div class="box warn"><b>Could not save the anchor.</b><br>'+escapeHtml(e.message||String(e))+
           '<br>It will work for this session but is not stored. '+
@@ -512,7 +708,25 @@ async function addPhotos(){
   prog.innerHTML='<div class="box '+(failed?'warn':'ok')+'">Added '+(n-failed)+' photos, '+
     Math.round(bytes/1024*10)/10+' MB after compression'+(failed?'. '+failed+' could not be read.':'.')+'</div>';
   setTimeout(()=>{prog.innerHTML=''},6000);
-  renderCatalog();
+  renderCatalog();scheduleBackup();
+}
+let attachTarget=null;
+function attachPhoto(id){
+  attachTarget=id;
+  document.getElementById('attach-in').click();
+}
+async function attachPhotoFile(){
+  const f=document.getElementById('attach-in').files[0];
+  const id=attachTarget;attachTarget=null;
+  document.getElementById('attach-in').value='';
+  if(!f||id===null)return;
+  const it=S.items.find(x=>x.id===id);if(!it)return;
+  try{
+    it.image=await shrink(f,MAXEDGE,JPEGQ);
+    it.thumb=await shrink(it.image,THUMB,0.7);
+    await dbPut('items',it);
+    renderCatalog();scheduleBackup();
+  }catch(e){alert('Could not read that image: '+e.message)}
 }
 async function removeItem(id){await dbDel('items',id);S.items=S.items.filter(i=>i.id!==id);S.renders={};renderCatalog()}
 async function clearCatalog(){
@@ -579,21 +793,19 @@ const DESCRIBE=
  '"desc":"two to three sentences, rich enough to redraw the garment"}';
 
 async function describeItem(it){
-  const variants=[
-    {response_format:{type:'json_schema',json_schema:{name:'garment',strict:true,schema:ITEM_SCHEMA}}},
-    {response_format:{type:'json_object'}},{}
-  ];
+  const sl=slotOf(ls('or-vision'));
+  const variants=[{json:ITEM_SCHEMA},{json:true},{}];
   let last='';
-  for(const extra of variants){
+  for(const v of variants){
     for(let tryN=0;tryN<3;tryN++){
       try{
-        const d=await or(Object.assign({model:visionModel(),temperature:0.2,max_tokens:700,
-          messages:[{role:'user',content:[{type:'image_url',image_url:{url:it.image}},{type:'text',text:DESCRIBE}]}]},extra));
-        const t=textOf(d);
-        if(!t.trim()){last='empty (finish: '+(finishOf(d)||'none')+')';break}
-        const p=extractJSON(t);
-        if(!p.desc){last='no desc field';break}
-        return p;
+        const out=await ask(sl,Object.assign({
+          parts:[{image:it.image},{text:DESCRIBE}],
+          temperature:0.2,maxTokens:700},v));
+        if(!out.text.trim()){last='empty (finish: '+(out.finish||'none')+')';break}
+        const parsed=extractJSON(out.text);
+        if(!parsed.desc){last='no desc field';break}
+        return parsed;
       }catch(e){
         last=e.message;
         if(e.retry){await sleep(1500*Math.pow(2,tryN));continue}
@@ -631,6 +843,7 @@ async function runQueue(todo){
     }
   };
   await Promise.all(Array.from({length:Math.min(concurrency(),todo.length)},worker));
+  if(done)scheduleBackup();
   return {done:done,failed:failed,cancelled:S.cancel};
 }
 function cancelWork(){S.cancel=true;go('s-catalog')}
@@ -638,9 +851,9 @@ function cancelWork(){S.cancel=true;go('s-catalog')}
 async function describeMissing(){
   const todo=pending();
   if(!todo.length){alert('Nothing pending.');return}
-  if(!visionModel()){alert('Pick an analyst model first.');go('s-models');return}
+  if(!ls('or-vision')){alert('Pick an analyst model first.');go('s-models');return}
   document.getElementById('work-title').textContent='Describing garments';
-  document.getElementById('work-sub').textContent=visionModel()+' · '+concurrency()+' at a time';
+  document.getElementById('work-sub').textContent=slotLabel(slotOf(ls('or-vision')))+' · '+concurrency()+' at a time';
   go('s-working');
   const r=await runQueue(todo);
   renderCatalog();
@@ -652,7 +865,7 @@ async function retryFailed(){
   if(!todo.length)return;
   todo.forEach(i=>delete i.failed);
   document.getElementById('work-title').textContent='Retrying';
-  document.getElementById('work-sub').textContent=visionModel();
+  document.getElementById('work-sub').textContent=slotLabel(slotOf(ls('or-vision')));
   go('s-working');
   const r=await runQueue(todo);
   renderCatalog();
@@ -681,7 +894,7 @@ async function editDesc(id){
   const it=S.items.find(x=>x.id===id);if(!it)return;
   const v=prompt('Edit description:',it.desc||'');
   if(v===null)return;
-  it.desc=v.trim();delete it.failed;await dbPut('items',it);S.renders={};showDetails();
+  it.desc=v.trim();delete it.failed;await dbPut('items',it);S.renders={};showDetails();scheduleBackup();
 }
 
 /* ============ style: compact index, text only ============ */
@@ -709,12 +922,12 @@ function stylePrompt(strict,lines,brief,count){
 async function runFlow(){
   if(S.items.length<2){alert('Add at least 2 garments.');return}
   if(!S.anchor){alert('Set an anchor photo first.');return}
-  if(!textModel()){alert('Pick your models first.');go('s-models');return}
+  if(!ls('or-text')){alert('Pick your models first.');go('s-models');return}
 
   if(pending().length){
-    if(!visionModel()){alert('Pick an analyst model first.');go('s-models');return}
+    if(!ls('or-vision')){alert('Pick an analyst model first.');go('s-models');return}
     document.getElementById('work-title').textContent='Describing garments';
-    document.getElementById('work-sub').textContent=visionModel()+' · '+concurrency()+' at a time';
+    document.getElementById('work-sub').textContent=slotLabel(slotOf(ls('or-vision')))+' · '+concurrency()+' at a time';
     go('s-working');
     const r=await runQueue(pending());
     renderCatalog();
@@ -728,7 +941,7 @@ async function runFlow(){
   const strict=mode()==='strict';
   const brief=(document.getElementById('brief')||{}).value||'';
   document.getElementById('work-title').textContent='Styling';
-  document.getElementById('work-sub').textContent=(strict?'Strict':'Suggestion')+' — '+textModel();
+  document.getElementById('work-sub').textContent=(strict?'Strict':'Suggestion')+' — '+slotLabel(slotOf(ls('or-text')));
   document.getElementById('work-status').textContent='Styling '+described.length+' garments…';
   document.getElementById('work-bar').style.width='60%';
   document.getElementById('work-detail').textContent='Text only — no photos sent.';
@@ -736,20 +949,25 @@ async function runFlow(){
 
   const order=described.map(i=>i.id);
   const lines=described.map((i,n)=>compactLine(i,n)).join('\n');
-  const base={model:textModel(),temperature:0.6,max_tokens:2000,
-    messages:[{role:'user',content:stylePrompt(strict,lines,brief,described.length)}]};
+  const sl=slotOf(ls('or-text'));
+  const prompt=stylePrompt(strict,lines,brief,described.length);
+  const plain='Wardrobe:\n'+lines+'\n\nPick 3 outfits. Answer with only a JSON array, nothing else:\n'+
+    '[{"name":"Look 1","indices":[0,1,2],"additions":[],"why":"","occasion":""}]';
   const attempts=[
-    Object.assign({},base,{response_format:{type:'json_schema',json_schema:{name:'outfits',strict:true,schema:OUTFIT_SCHEMA}}}),
-    Object.assign({},base,{response_format:{type:'json_object'}}),base];
+    {parts:[{text:prompt}],json:OUTFIT_SCHEMA,temperature:0.6,maxTokens:2000},
+    {parts:[{text:prompt}],json:true,temperature:0.6,maxTokens:2000},
+    {parts:[{text:prompt}],temperature:0.6,maxTokens:2000},
+    {parts:[{text:plain}]}
+  ];
 
+  const trace=[];
   let lastErr='';
   for(let a=0;a<attempts.length;a++){
-    document.getElementById('work-detail').textContent=['Structured output…','JSON mode…','Unconstrained…'][a];
+    document.getElementById('work-detail').textContent=['Structured output…','JSON mode…','Unconstrained…','Plain request…'][a];
     try{
-      const d=await or(attempts[a]);
-      const t=textOf(d);
-      if(!t.trim()){lastErr='empty (finish: '+(finishOf(d)||'none')+')';continue}
-      const parsed=extractJSON(t);
+      const out=await ask(sl,attempts[a],trace);
+      if(!out.text.trim()){lastErr='empty response (finish: '+(out.finish||'none')+')';continue}
+      const parsed=extractJSON(out.text);
       const list=Array.isArray(parsed)?parsed:(parsed.outfits||[]);
       S.outfits=ensureShoes(list.map(o=>Object.assign({},o,{
         indices:(o.indices||[]).map(n=>order[n]).filter(v=>v!==undefined),
@@ -758,8 +976,42 @@ async function runFlow(){
       S.renders={};S.i=0;showOutfit();go('s-outfits');return;
     }catch(e){lastErr=e.message;console.warn('attempt '+(a+1)+':',e.message)}
   }
-  alert('Styling failed: '+lastErr+'\n\nSee console (F12).');
+  showDiagnostics('Styling failed: '+lastErr,trace,slotLabel(sl));
   go('s-catalog');
+}
+
+/* On a phone there is no console, so failures have to be readable on screen. */
+function showDiagnostics(headline,trace,model){
+  S.lastTrace={headline:headline,trace:trace,model:model};
+  const free=/:free$/.test(model||'');
+  const el=document.getElementById('diag');
+  if(!el)return;
+  el.innerHTML='<div class="box warn"><b>'+escapeHtml(headline)+'</b>'+
+    (free?'<br><br><b>'+escapeHtml(model)+' is a :free variant.</b> Free endpoints are shared and frequently return an '+
+      'empty response when busy, and many ignore structured-output requests entirely. A paid model at a fraction of a '+
+      'cent per call is far more reliable here.':'')+
+    '<br><br><button class="sm" onclick="toggleTrace()">Show what the server returned</button> '+
+    '<button class="sm" onclick="copyTrace()">Copy details</button> '+
+    '<button class="sm" onclick="go(\'s-models\')">Change model</button>'+
+    '<div id="trace-body" style="display:none;margin-top:.6rem"></div></div>';
+}
+function toggleTrace(){
+  const b=document.getElementById('trace-body');
+  if(!b||!S.lastTrace)return;
+  if(b.style.display==='none'){
+    b.style.display='block';
+    b.innerHTML=S.lastTrace.trace.map((t,n)=>
+      '<div style="margin-bottom:.5rem"><b style="font-size:12px">Attempt '+(n+1)+
+      ' · HTTP '+t.status+' · '+t.ms+'ms · format: '+(t.format||'none')+'</b>'+
+      '<pre style="white-space:pre-wrap;word-break:break-all;font-size:10px;background:#fff;padding:.4rem;border-radius:4px;margin-top:.2rem">'+
+      escapeHtml(t.body||'(no body)')+'</pre></div>').join('')||'<p class="muted">No responses captured.</p>';
+  }else b.style.display='none';
+}
+function copyTrace(){
+  if(!S.lastTrace)return;
+  const txt=S.lastTrace.headline+'\nmodel: '+S.lastTrace.model+'\n\n'+
+    S.lastTrace.trace.map((t,n)=>'Attempt '+(n+1)+' HTTP '+t.status+' format '+(t.format||'none')+'\n'+(t.body||'')).join('\n\n');
+  if(navigator.clipboard)navigator.clipboard.writeText(txt).then(()=>alert('Copied.'),()=>alert('Could not copy.'));
 }
 
 function ensureShoes(outfits){
@@ -782,7 +1034,12 @@ function substitutions(worn){
 function outfitInstruction(o,usePhotos){
   const worn=(o.indices||[]).map(itemById).filter(Boolean);
   const strict=mode()==='strict';
-  const lines=worn.map((i,n)=>(usePhotos?'Reference image '+(n+2):'Garment '+(n+1))+': '+(i.desc||i.detail||i.type)).join('\n');
+  let refN=1;
+  const lines=worn.map((i,n)=>{
+    const hasPhoto=usePhotos&&i.image;
+    if(hasPhoto)refN++;
+    return (hasPhoto?'Reference image '+refN:'Garment '+(n+1))+': '+(i.desc||i.detail||i.type);
+  }).join('\n');
   const head=(usePhotos?'Reference image 1':'The reference image')+
     ' is the person. Keep their face, hair, body proportions and skin tone exactly as shown — this must be recognisably the same individual.\n\n';
   let extra='';
@@ -805,27 +1062,38 @@ function outfitInstruction(o,usePhotos){
 }
 async function renderOutfit(o,slotId,force){
   const usePhotos=renderSrc()==='photos';
-  const cacheKey=mode()+'|'+renderSrc()+'|'+(o.name||'o')+'|'+(o.indices||[]).join(',');
+  const sl=slotOf(ls('or-image'));
+  const cacheKey=mode()+'|'+renderSrc()+'|'+sl.p+'|'+(o.name||'o')+'|'+(o.indices||[]).join(',');
   const slot=()=>document.getElementById(slotId);
   if(!force&&S.renders[cacheKey]){if(slot())slot().innerHTML='<img src="'+S.renders[cacheKey]+'">';return}
-  if(!imageModel()){if(slot())slot().innerHTML='<p class="muted" style="padding:1rem">No renderer selected.</p>';return}
-  const content=[{type:'image_url',image_url:{url:S.anchor}}];
-  if(usePhotos)(o.indices||[]).map(itemById).filter(Boolean).forEach(i=>content.push({type:'image_url',image_url:{url:i.image}}));
-  content.push({type:'text',text:outfitInstruction(o,usePhotos)});
-  const meta=S.meta[imageModel()]||{out:[]};
-  const modalities=(meta.out||[]).includes('text')?['image','text']:['image'];
+  if(!sl.id){if(slot())slot().innerHTML='<p class="muted" style="padding:1rem">No renderer selected.</p>';return}
+
+  const parts=[{image:S.anchor}];
+  if(usePhotos)(o.indices||[]).map(itemById).filter(i=>i&&i.image).forEach(i=>parts.push({image:i.image}));
+  parts.push({text:outfitInstruction(o,usePhotos)});
+
+  const trace=[];
   try{
-    const d=await or({model:imageModel(),messages:[{role:'user',content:content}],
-      modalities:modalities,image_config:{aspect_ratio:aspect()}});
-    const url=imageOf(d);
-    if(!url){const t=textOf(d);throw new Error(t?('text only: '+String(t).slice(0,140)):'no image in response')}
-    S.renders[cacheKey]=url;
-    if(slot())slot().innerHTML='<img src="'+url+'">';
-  }catch(e){if(slot())slot().innerHTML=renderError(e.message)}
+    const out=await ask(sl,{parts:parts,wantImage:true,temperature:0.4,aspect:aspect()},trace);
+    if(!out.image){
+      throw new Error(out.text?('replied with text only: '+out.text.slice(0,140)):'no image in response');
+    }
+    S.renders[cacheKey]=out.image;
+    if(slot())slot().innerHTML='<img src="'+out.image+'">';
+  }catch(e){
+    S.lastTrace={headline:'Render failed: '+e.message,trace:trace,model:slotLabel(sl)};
+    if(slot())slot().innerHTML=renderError(e.message);
+  }
 }
 function renderError(msg){
-  const alts=(S.imageModels||[]).filter(m=>m!==imageModel()).slice(0,1);
-  const alt=alts.length?' <button class="sm" onclick="switchImageModel(\''+alts[0]+'\')">Try '+alts[0]+'</button>':'';
+  const cur=ls('or-image');
+  const alts=(S.imageModels||[]).filter(m=>m!==cur).slice(0,1);
+  const alt=alts.length?' <button class="sm" onclick="switchImageModel(\''+alts[0]+'\')">Try '+escapeHtml(slotLabel(slotOf(alts[0])))+'</button>':'';
+  if(/limit:\s*0/.test(msg))
+    return '<div style="padding:1rem;text-align:left"><b style="font-size:13px">That model has no free quota.</b>'+
+      '<p class="muted" style="margin:.5rem 0">'+escapeHtml(msg)+'</p>'+
+      '<p class="muted">Pro image models are paid-tier only on Google AI Studio. Pick a flash image model, or switch this slot to OpenRouter.</p>'+
+      alt+' <button class="sm" onclick="go(\'s-models\')">Change model</button></div>';
   if(/credit|insufficient|402|payment/i.test(msg))
     return '<div style="padding:1rem;text-align:left"><b style="font-size:13px">Out of credit.</b><p class="muted" style="margin:.5rem 0">'+escapeHtml(msg)+'</p></div>';
   if(/rate limit|quota|429|exhausted/i.test(msg))
@@ -838,7 +1106,8 @@ function showOutfit(force){
   const o=S.outfits[S.i];if(!o)return;
   const strict=mode()==='strict';
   document.getElementById('outfit-counter').textContent=
-    'Outfit '+(S.i+1)+' of '+S.outfits.length+' — '+(strict?'strict':'suggestion')+' — '+(renderSrc()==='photos'?'photo refs':'text only');
+    'Outfit '+(S.i+1)+' of '+S.outfits.length+' — '+(strict?'strict':'suggestion')+
+    ' — '+(renderSrc()==='photos'?'photo refs':'text only')+' — '+slotLabel(slotOf(ls('or-image')));
   const pics=(o.indices||[]).map(itemById).filter(Boolean);
   const subs=strict?substitutions(pics):[];
   const adds=strict?[]:(o.additions||[]);
@@ -846,7 +1115,10 @@ function showOutfit(force){
     '<div class="card"><b style="font-size:15px">'+escapeHtml(o.name||'Look')+'</b>'+
     '<div class="render" id="render-slot"><div><div class="spinner"></div><p class="muted">Rendering your anchor…</p></div></div>'+
     '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:.75rem 0">'+
-    pics.map(i=>'<div><img src="'+(i.thumb||i.image)+'" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px"><div class="muted">'+escapeHtml([i.color,i.type].filter(Boolean).join(' '))+'</div></div>').join('')+
+    pics.map(i=>'<div>'+(i.thumb||i.image
+      ? '<img src="'+(i.thumb||i.image)+'" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px">'
+      : '<div style="width:100%;aspect-ratio:1;border:1px dashed var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--muted)">no photo</div>')+
+      '<div class="muted">'+escapeHtml([i.color,i.type].filter(Boolean).join(' '))+'</div></div>').join('')+
     '</div>'+
     (subs.length?'<div style="margin-bottom:.5rem">'+subs.map(s=>'<span class="tag sub">'+s.label+'</span>').join('')+'</div>':'')+
     (adds.length?'<div style="margin-bottom:.5rem"><span class="muted">Not in your wardrobe: </span>'+adds.map(a=>'<span class="tag sug">'+escapeHtml(a)+'</span>').join('')+'</div>':'')+
@@ -856,12 +1128,237 @@ function showOutfit(force){
 }
 function shiftOutfit(d){S.i=(S.i+d+S.outfits.length)%S.outfits.length;showOutfit()}
 
+/* ================= Google Drive backup =================
+   Uses the drive.file scope, which only grants access to files this app
+   itself creates — it cannot see the rest of your Drive, and that scope
+   needs no Google verification for personal use. */
+const GSCOPE='https://www.googleapis.com/auth/drive.file';
+const BKNAME='wardrobe-backup.json';
+const gClient=()=>ls('g-client'), bkScope=()=>ls('bk-scope')||'full';
+let TOKEN='',TOKENAT=0,tokenClient=null,backupTimer=null;
+
+const gsiReady=()=>!!(window.google&&google.accounts&&google.accounts.oauth2);
+const tokenValid=()=>TOKEN&&(Date.now()-TOKENAT)<3300000;
+
+function driveStatus(msg,cls){
+  const el=document.getElementById('drive-status');
+  if(el)el.innerHTML=cls?'<span style="color:var(--'+cls+')">'+escapeHtml(msg)+'</span>':escapeHtml(msg);
+}
+function driveControls(){
+  const fs=document.getElementById('file-status');
+  if(fs){
+    const canShare=!!(navigator.canShare&&navigator.share);
+    const last=ls('bk-file-last');
+    const btn=document.getElementById('export-btn');
+    if(btn)btn.textContent=canShare?'Save to Files…':'Download a copy';
+    fs.innerHTML=(last
+      ? 'Last saved '+new Date(+last).toLocaleString()+'. '
+      : '')+
+      (canShare
+        ? 'Saves as <b>wardrobe-backup.json</b> — save to the same folder each time and iOS offers Replace Existing, so you keep one current copy.'
+        : 'Downloads <b>wardrobe-backup.json</b>. Save over the previous one to keep a single current copy.');
+  }
+  const el=document.getElementById('drive-controls');if(!el)return;
+  if(!gClient()){
+    el.innerHTML='<p class="muted">Add a Google OAuth client ID in Models settings to enable this. '+
+      '<button class="sm" onclick="go(\'s-models\')">Settings</button></p>';
+    driveStatus('Not configured.');return;
+  }
+  const last=ls('bk-last');
+  el.innerHTML=
+    '<div class="row" style="margin-bottom:.4rem">'+
+      '<button class="sm" onclick="backupNow()">Back up now</button>'+
+      '<button class="sm" onclick="restoreFromDrive()">Restore</button>'+
+    '</div>'+
+    '<label style="font-size:12px;display:flex;align-items:center;gap:6px;margin:0">'+
+      '<input type="checkbox" id="autobk" '+(ls('bk-auto')==='1'?'checked':'')+
+      ' onchange="ls(\'bk-auto\',this.checked?\'1\':\'0\')" style="width:auto;margin:0"> Back up automatically after changes</label>';
+  if(last)driveStatus('Last backup: '+new Date(+last).toLocaleString()+' · '+(ls('bk-size')||'?')+' KB','ok');
+  else driveStatus('Configured, never backed up.');
+}
+
+function getToken(interactive){
+  return new Promise((res,rej)=>{
+    if(tokenValid()){res(TOKEN);return}
+    if(!gClient()){rej(new Error('No Google client ID set.'));return}
+    if(!gsiReady()){rej(new Error('Google sign-in script did not load. Check your connection or an ad blocker.'));return}
+    if(!tokenClient){
+      tokenClient=google.accounts.oauth2.initTokenClient({
+        client_id:gClient(),scope:GSCOPE,
+        callback:r=>{
+          if(r&&r.access_token){TOKEN=r.access_token;TOKENAT=Date.now();res(TOKEN)}
+          else rej(new Error((r&&r.error_description)||'Authorisation was cancelled.'));
+        },
+        error_callback:e=>rej(new Error((e&&(e.message||e.type))||'Sign-in failed.'))
+      });
+    }else{
+      tokenClient.callback=r=>{
+        if(r&&r.access_token){TOKEN=r.access_token;TOKENAT=Date.now();res(TOKEN)}
+        else rej(new Error((r&&r.error_description)||'Authorisation was cancelled.'));
+      };
+    }
+    try{tokenClient.requestAccessToken({prompt:interactive?'consent':''})}
+    catch(e){rej(e)}
+  });
+}
+
+function backupPayload(){
+  const light=bkScope()==='light';
+  return JSON.stringify({
+    v:4,exported:new Date().toISOString(),scope:bkScope(),
+    anchor:S.anchor,
+    items:S.items.map(i=>{
+      const o={id:i.id,added:i.added};
+      ['type','color','style','fit','pattern','material','detail','desc'].forEach(k=>{if(i[k])o[k]=i[k]});
+      if(!light){o.image=i.image;o.thumb=i.thumb}
+      return o;
+    })
+  });
+}
+
+async function driveFindFile(token){
+  const q=encodeURIComponent("name='"+BKNAME+"' and trashed=false");
+  const r=await fetch('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=files(id,modifiedTime,size)&spaces=drive',
+    {headers:{Authorization:'Bearer '+token}});
+  if(!r.ok)throw new Error('Drive lookup failed: HTTP '+r.status);
+  const d=await r.json();
+  return (d.files||[])[0]||null;
+}
+
+async function backupNow(silent){
+  try{
+    if(!S.items.length&&!S.anchor)throw new Error('Nothing to back up yet.');
+    driveStatus('Signing in…');
+    const token=await getToken(!silent);
+    const payload=backupPayload();
+    const sizeKB=Math.round(payload.length/1024);
+    driveStatus('Uploading '+sizeKB+' KB…');
+    const existing=await driveFindFile(token);
+    let r;
+    if(existing){
+      r=await fetch('https://www.googleapis.com/upload/drive/v3/files/'+existing.id+'?uploadType=media',
+        {method:'PATCH',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:payload});
+    }else{
+      const boundary='wardrobe'+Date.now();
+      const meta=JSON.stringify({name:BKNAME,mimeType:'application/json',
+        description:'Wardrobe AI catalog backup'});
+      const body='--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+meta+
+        '\r\n--'+boundary+'\r\nContent-Type: application/json\r\n\r\n'+payload+'\r\n--'+boundary+'--';
+      r=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+        {method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'multipart/related; boundary='+boundary},body:body});
+    }
+    if(!r.ok){
+      const t=await r.text();
+      if(r.status===401){TOKEN='';throw new Error('Session expired — tap Back up now again.')}
+      throw new Error('Upload failed: HTTP '+r.status+' '+t.slice(0,200));
+    }
+    ls('bk-last',String(Date.now()));ls('bk-size',String(sizeKB));
+    driveControls();
+    driveStatus('Backed up '+sizeKB+' KB at '+new Date().toLocaleTimeString(),'ok');
+  }catch(e){
+    driveStatus('Backup failed: '+(e.message||e),'warn');
+    console.warn('drive backup:',e);
+  }
+}
+
+async function restoreFromDrive(){
+  try{
+    driveStatus('Signing in…');
+    const token=await getToken(true);
+    const f=await driveFindFile(token);
+    if(!f)throw new Error('No backup found in Drive.');
+    driveStatus('Downloading…');
+    const r=await fetch('https://www.googleapis.com/drive/v3/files/'+f.id+'?alt=media',
+      {headers:{Authorization:'Bearer '+token}});
+    if(!r.ok)throw new Error('Download failed: HTTP '+r.status);
+    const d=await r.json();
+    if(!Array.isArray(d.items))throw new Error('That file is not a wardrobe backup.');
+    const withPhotos=d.items.filter(i=>i.image).length;
+    if(!confirm('Backup from '+new Date(d.exported).toLocaleString()+'\n'+
+      d.items.length+' garments ('+withPhotos+' with photos)\n\n'+
+      'This ADDS to your current wardrobe — it does not replace it. Continue?'))  {driveControls();return}
+    const res=await mergeItems(d.items);
+    const added=res.added,merged=res.merged,noPhoto=res.noPhoto;
+    if(d.anchor){S.anchor=d.anchor;await dbPut('meta',{k:'anchor',v:d.anchor});
+      const t=document.getElementById('anchor-tile');if(t)t.innerHTML='<img src="'+d.anchor+'">'}
+    renderCatalog();driveControls();
+    driveStatus('Restored '+added+' garments'+(merged?', updated '+merged+' existing':'')+
+      (noPhoto?' · '+noPhoto+' have descriptions but no photo':'')+'.','ok');
+  }catch(e){
+    driveStatus('Restore failed: '+(e.message||e),'warn');
+    console.warn('drive restore:',e);
+  }
+}
+
+/* Debounced so a burst of uploads or a describe run triggers one upload,
+   not one per item. */
+function scheduleBackup(){
+  if(ls('bk-auto')!=='1'||!gClient())return;
+  clearTimeout(backupTimer);
+  backupTimer=setTimeout(()=>backupNow(true),45000);
+}
+
+/* A light backup carries descriptions without photos. Those records are still
+   fully usable: styling reads only the text, and descriptions-only rendering
+   needs no garment photo. So keep them rather than discarding them. */
+async function mergeItems(items){
+  let added=0,merged=0,noPhoto=0;
+  const FIELDS=['type','color','style','fit','pattern','material','detail','desc'];
+  for(const it of items){
+    const existing=it.id!==undefined?S.items.find(x=>x.id===it.id):null;
+    if(existing){
+      let changed=false;
+      FIELDS.forEach(k=>{if(it[k]&&existing[k]!==it[k]){existing[k]=it[k];changed=true}});
+      if(it.image&&!existing.image){existing.image=it.image;existing.thumb=it.thumb||it.image;changed=true}
+      if(changed){await dbPut('items',existing);merged++}
+      if(!existing.image)noPhoto++;
+      continue;
+    }
+    const copy={added:it.added||Date.now()};
+    if(it.image){copy.image=it.image;copy.thumb=it.thumb||it.image}
+    FIELDS.forEach(k=>{if(it[k])copy[k]=it[k]});
+    if(!copy.image&&!copy.desc)continue;
+    const id=await dbAdd('items',copy);
+    S.items.push(Object.assign({id:id},copy));
+    added++;
+    if(!copy.image)noPhoto++;
+  }
+  return {added:added,merged:merged,noPhoto:noPhoto};
+}
+
 /* ---- backup ---- */
-function exportCatalog(){
-  const blob=new Blob([JSON.stringify({v:3,exported:new Date().toISOString(),anchor:S.anchor,items:S.items})],{type:'application/json'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download='wardrobe-backup-'+new Date().toISOString().slice(0,10)+'.json';
-  a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+async function exportCatalog(){
+  if(!S.items.length&&!S.anchor){alert('Nothing to export yet.');return}
+  const payload=backupPayload();
+  /* Constant filename on purpose: saving again to the same folder makes iOS
+     offer "Replace Existing", so you keep one current backup instead of a
+     pile of dated ones. */
+  const name='wardrobe-backup.json';
+  const blob=new Blob([payload],{type:'application/json'});
+  const sizeKB=Math.round(payload.length/1024);
+
+  /* Safari has no File System Access API, so the share sheet is the only
+     route to Files / iCloud Drive. It also gives AirDrop and Messages. */
+  if(navigator.canShare&&navigator.share){
+    try{
+      const file=new File([blob],name,{type:'application/json'});
+      if(navigator.canShare({files:[file]})){
+        await navigator.share({files:[file],title:'Wardrobe backup'});
+        ls('bk-file-last',String(Date.now()));
+        driveControls();
+        return;
+      }
+    }catch(e){
+      if(e&&e.name==='AbortError')return;
+      console.warn('share failed, falling back to download:',e);
+    }
+  }
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);a.download=name;a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+  ls('bk-file-last',String(Date.now()));
+  driveControls();
+  if(sizeKB>4000)console.log('exported '+sizeKB+' KB');
 }
 function importCatalog(){
   const f=document.getElementById('import-in').files[0];if(!f)return;
@@ -870,16 +1367,15 @@ function importCatalog(){
     try{
       const d=JSON.parse(e.target.result);
       if(!Array.isArray(d.items))throw new Error('not a wardrobe backup');
-      if(!confirm('Add '+d.items.length+' garments?'+(d.anchor?' Anchor will be replaced.':'')))return;
-      for(const it of d.items){
-        const copy={image:it.image,thumb:it.thumb||it.image,added:it.added||Date.now()};
-        ['type','color','style','fit','pattern','material','detail','desc'].forEach(k=>{if(it[k])copy[k]=it[k]});
-        const id=await dbAdd('items',copy);
-        S.items.push(Object.assign({id:id},copy));
-      }
+      const photos=d.items.filter(i=>i.image).length;
+      if(!confirm('Restore '+d.items.length+' garments ('+photos+' with photos)?'+
+        (d.anchor?'\nThe anchor will be replaced.':'')))return;
+      const res=await mergeItems(d.items);
       if(d.anchor){S.anchor=d.anchor;await dbPut('meta',{k:'anchor',v:d.anchor});
         document.getElementById('anchor-tile').innerHTML='<img src="'+d.anchor+'">'}
-      renderCatalog();alert('Imported '+d.items.length+' garments with descriptions.');
+      renderCatalog();driveControls();
+      alert('Added '+res.added+(res.merged?', updated '+res.merged+' existing':'')+
+        (res.noPhoto?'.\n'+res.noPhoto+' garments have descriptions but no photo — tap them to attach one.':'.'));
     }catch(err){alert('Import failed: '+err.message)}
   };
   r.readAsText(f);document.getElementById('import-in').value='';
