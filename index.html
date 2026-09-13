@@ -261,18 +261,18 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
   </div>
   <div class="row" style="margin-bottom:.5rem">
     <button id="share-btn" onclick="shareSheet()">Send as one image</button>
-    <button onclick="copyOutfitPrompt()">Copy prompt</button>
+    <button id="dl-btn" onclick="downloadSheet()">Save image</button>
   </div>
   <div class="row" style="margin-bottom:.5rem">
-    <button class="sm" onclick="shareOutfit()">Send separate photos</button>
     <button class="sm" onclick="previewSheet()">Preview sheet</button>
+    <button class="sm" onclick="copyOutfitPrompt()">Copy prompt</button>
   </div>
   <button onclick="go('s-models')">Change models</button>
 </div>
 
 </div>
 <script>
-const BUILD='v16 · 2026-09-13 · prompt printed on sheet';
+const BUILD='v17 · 2026-09-13 · share gesture fix';
 const S={items:[],outfits:[],i:0,renders:{},imageModels:[],meta:{},anchor:'',show:60,dshow:25,filter:'',cancel:false};
 const OR='https://openrouter.ai/api/v1';
 const FRAME='Full-body standing fashion lookbook photograph, framed head to toe. The entire figure is inside the frame with clear empty space above the head and below the feet — do not crop at the ankles, knees, shins or waist. Weight on one leg, shoulders square to camera, arms relaxed at sides, chin level, confident natural posture. Shot at eye level, 85mm lens, evenly lit plain light-grey studio backdrop, sharp focus.';
@@ -1374,6 +1374,8 @@ function showOutfit(force){
     renderBlock+'</div>';
 
   if(!cached&&(rm==='auto'||force))renderOutfit(o,'render-slot',force);
+  /* build the shareable sheet in the background so the Send tap is instant */
+  setTimeout(()=>prepareSheet(o,true),50);
 }
 
 /* ---------- send the outfit to another app ---------- */
@@ -1511,62 +1513,117 @@ async function compositeOutfit(o,embed){
   return c.toDataURL('image/jpeg',0.92);
 }
 
-async function downloadSheet(){
-  const o=S.outfits[S.i];if(!o)return;
+/* iOS revokes transient user activation across an await, so the sheet has to
+   exist BEFORE the tap. It is built in the background when an outfit is shown;
+   the share call then runs with no async work in front of it. */
+function sheetKey(o){return mode()+'|'+(embedPrompt()?'e':'p')+'|'+(o.name||'o')+'|'+(o.indices||[]).join(',')}
+
+async function prepareSheet(o,silent){
+  const k=sheetKey(o);
+  if(S.sheet&&S.sheet.key===k)return S.sheet;
+  if(S.sheetBuilding===k)return null;
+  S.sheetBuilding=k;
   try{
-    const sheet=await compositeOutfit(o,embedPrompt());
-    const file=dataUrlToFile(sheet,'outfit.jpg');
-    if(navigator.share&&file&&navigator.canShare&&navigator.canShare({files:[file]})){
-      await navigator.share({files:[file],title:'Outfit sheet'});
-      return;
-    }
-    const a=document.createElement('a');
-    a.href=sheet;a.download='outfit.jpg';a.click();
-  }catch(e){if(!(e&&e.name==='AbortError'))alert('Could not save: '+(e.message||e))}
+    const url=await compositeOutfit(o,embedPrompt());
+    S.sheet={key:k,url:url,file:dataUrlToFile(url,'outfit.jpg')};
+    markSheetReady(true);
+    return S.sheet;
+  }catch(e){
+    if(!silent)console.warn('sheet build failed:',e);
+    S.sheet=null;markSheetReady(false);
+    return null;
+  }finally{S.sheetBuilding=null}
 }
 
-async function shareSheet(){
+function markSheetReady(ok){
+  const b=document.getElementById('share-btn');
+  if(!b)return;
+  b.disabled=false;
+  b.textContent=ok?'Send as one image':'Build image to send';
+}
+
+/* Synchronous entry point: no await before navigator.share. */
+function shareSheet(){
   const o=S.outfits[S.i];if(!o)return;
-  const btn=document.getElementById('share-btn');
-  if(btn){btn.disabled=true;btn.textContent='Building…'}
+  const k=sheetKey(o);
+  if(!S.sheet||S.sheet.key!==k||!S.sheet.file){
+    const b=document.getElementById('share-btn');
+    if(b){b.textContent='Preparing…';b.disabled=true}
+    prepareSheet(o).then(sh=>{
+      const bb=document.getElementById('share-btn');
+      if(bb){bb.disabled=false;bb.textContent=sh?'Ready — tap to send':'Build image to send'}
+    });
+    return;
+  }
+  const file=S.sheet.file;
+  const text=embedPrompt()
+    ? 'Follow the instructions printed at the bottom of this image.'
+    : sharePrompt(o,true);
   try{
-    const embed=embedPrompt();
-    const sheet=await compositeOutfit(o,embed);
-    const file=dataUrlToFile(sheet,'outfit.jpg');
-    /* when the prompt is printed on the sheet, keep the shared text to a short
-       nudge — the instructions travel inside the picture */
-    const text=embed
-      ? 'Follow the instructions printed at the bottom of this image.'
-      : sharePrompt(o,true);
-    if(navigator.share&&file&&navigator.canShare&&navigator.canShare({files:[file]})){
-      await navigator.share({files:[file],text:text,title:o.name||'Outfit'});
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      navigator.share({files:[file],text:text,title:o.name||'Outfit'})
+        .catch(()=>{})
+        .finally(resetShareUI);
     }else if(navigator.share){
-      await navigator.share({text:text,title:o.name||'Outfit'});
+      navigator.share({text:text,title:o.name||'Outfit'}).catch(()=>{}).finally(resetShareUI);
     }else{
-      copyText(text,'Prompt copied.');
+      copyText(text,'Sharing is not supported here — prompt copied.');
     }
   }catch(e){
-    if(!(e&&e.name==='AbortError'))alert('Could not share: '+(e.message||e));
+    resetShareUI();
+    alert('Could not share: '+(e.message||e));
   }
-  if(btn){btn.disabled=false;btn.textContent='Send as one image'}
+}
+
+function resetShareUI(){
+  const b=document.getElementById('share-btn');
+  if(b){b.disabled=false;b.textContent='Send as one image'}
+  const d=document.getElementById('dl-btn');
+  if(d){d.disabled=false;d.textContent='Save image'}
+}
+/* Safari sometimes never settles the share promise when the app is resumed,
+   so recover the UI whenever the page becomes visible again. */
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)resetShareUI()});
+window.addEventListener('pageshow',resetShareUI);
+window.addEventListener('focus',resetShareUI);
+
+function downloadSheet(){
+  const o=S.outfits[S.i];if(!o)return;
+  const k=sheetKey(o);
+  if(!S.sheet||S.sheet.key!==k){
+    const d=document.getElementById('dl-btn');
+    if(d){d.textContent='Preparing…';d.disabled=true}
+    prepareSheet(o).then(()=>{
+      const dd=document.getElementById('dl-btn');
+      if(dd){dd.disabled=false;dd.textContent='Ready — tap to save'}
+    });
+    return;
+  }
+  const a=document.createElement('a');
+  a.href=S.sheet.url;a.download='outfit.jpg';a.click();
+  resetShareUI();
 }
 
 async function previewSheet(){
   const o=S.outfits[S.i];if(!o)return;
   try{
-    const sheet=await compositeOutfit(o,embedPrompt());
+    const built=await prepareSheet(o);
+    const sheet=(built&&built.url)||await compositeOutfit(o,embedPrompt());
     const slot=document.getElementById('outfit-display');
+    const old=document.getElementById('sheet-preview');
+    if(old)old.remove();
     const box=document.createElement('div');
-    box.className='card';
+    box.className='card';box.id='sheet-preview';
     box.innerHTML='<b style="font-size:13px">Reference sheet</b>'+
       '<img src="'+sheet+'" style="width:100%;border-radius:8px;margin:.5rem 0;border:1px solid var(--border)">'+
+      '<p class="muted" style="margin:0 0 .5rem">Press and hold the image above to share it directly — that route always works, even when the button does not.</p>'+
       '<label style="font-size:12px;display:flex;align-items:center;gap:6px;margin:0 0 .5rem">'+
       '<input type="checkbox" '+(embedPrompt()?'checked':'')+
-      ' onchange="ls(\'embed-prompt\',this.checked?\'1\':\'0\');this.closest(\'.card\').remove();previewSheet()" '+
-      'style="width:auto;margin:0"> Print the instructions onto the image</label>'+
+      ' onchange="ls(\'embed-prompt\',this.checked?\'1\':\'0\');S.sheet=null;previewSheet()" style="width:auto;margin:0">'+
+      ' Print the instructions onto the image</label>'+
       '<div class="row"><button class="sm" onclick="shareSheet()">Send this</button>'+
       '<button class="sm" onclick="downloadSheet()">Save image</button>'+
-      '<button class="sm" onclick="this.closest(\'.card\').remove()">Close</button></div>';
+      '<button class="sm" onclick="document.getElementById(\'sheet-preview\').remove()">Close</button></div>';
     slot.appendChild(box);
     box.scrollIntoView({behavior:'smooth',block:'nearest'});
   }catch(e){alert('Could not build the sheet: '+e.message)}
@@ -1621,7 +1678,7 @@ function updateSpend(){
     (sl.p==='l'?' (free)':(per?' ≈ $'+(n*per).toFixed(2):''));
 }
 
-function shiftOutfit(d){S.i=(S.i+d+S.outfits.length)%S.outfits.length;showOutfit()}
+function shiftOutfit(d){S.sheet=null;S.i=(S.i+d+S.outfits.length)%S.outfits.length;showOutfit()}
 
 /* ================= Google Drive backup =================
    Uses the drive.file scope, which only grants access to files this app
