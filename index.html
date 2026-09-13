@@ -272,7 +272,7 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
 
 </div>
 <script>
-const BUILD='v15 · 2026-09-13 · one-image share';
+const BUILD='v16 · 2026-09-13 · prompt printed on sheet';
 const S={items:[],outfits:[],i:0,renders:{},imageModels:[],meta:{},anchor:'',show:60,dshow:25,filter:'',cancel:false};
 const OR='https://openrouter.ai/api/v1';
 const FRAME='Full-body standing fashion lookbook photograph, framed head to toe. The entire figure is inside the frame with clear empty space above the head and below the feet — do not crop at the ankles, knees, shins or waist. Weight on one leg, shoulders square to camera, arms relaxed at sides, chin level, confident natural posture. Shot at eye level, 85mm lens, evenly lit plain light-grey studio backdrop, sharp focus.';
@@ -284,6 +284,7 @@ const ls=(k,v)=>v===undefined?(localStorage.getItem(k)||''):localStorage.setItem
 const okey=()=>ls('or-key');
 const aspect=()=>ls('or-aspect')||'3:4',mode=()=>ls('mode')||'strict',renderSrc=()=>ls('or-rendersrc')||'photos';
 const renderMode=()=>ls('render-mode')||'manual';
+const embedPrompt=()=>ls('embed-prompt')!=='0';
 function renderCost(){
   const sl=slotOf(ls('or-image'));
   if(!sl.id)return '';
@@ -1419,7 +1420,22 @@ function sharePrompt(o,oneSheet){
 function loadImg(src){
   return new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=src});
 }
-async function compositeOutfit(o){
+function wrapLines(ctx,text,maxW){
+  const out=[];
+  String(text).split('\n').forEach(para=>{
+    if(!para.trim()){out.push('');return}
+    let line='';
+    para.split(/\s+/).forEach(w=>{
+      const test=line?line+' '+w:w;
+      if(ctx.measureText(test).width>maxW&&line){out.push(line);line=w}
+      else line=test;
+    });
+    if(line)out.push(line);
+  });
+  return out;
+}
+
+async function compositeOutfit(o,embed){
   const worn=(o.indices||[]).map(itemById).filter(i=>i&&i.image);
   const W=1200,PAD=24,LABEL=34;
   const anchorW=Math.round(W*0.42);
@@ -1428,23 +1444,32 @@ async function compositeOutfit(o){
   const rows=Math.max(1,Math.ceil(worn.length/cols));
   const anchorH=Math.round(anchorW*4/3);
   const gridH=rows*(cellW+LABEL)+(rows-1)*PAD;
-  const H=Math.max(anchorH,gridH)+PAD*2+LABEL;
+  const topH=Math.max(anchorH,gridH)+PAD*2+LABEL;
+
+  /* measure the instruction block before sizing the canvas */
+  let lines=[],lineH=26,footH=0,instr='';
+  if(embed){
+    instr=sharePrompt(o,true);
+    const m=document.createElement('canvas').getContext('2d');
+    m.font='18px -apple-system,Helvetica,Arial';
+    lines=wrapLines(m,instr,W-PAD*2);
+    footH=PAD+34+lines.length*lineH+PAD;
+  }
 
   const c=document.createElement('canvas');
-  c.width=W;c.height=H;
+  c.width=W;c.height=topH+footH;
   const x=c.getContext('2d');
-  x.fillStyle='#ffffff';x.fillRect(0,0,W,H);
+  x.fillStyle='#ffffff';x.fillRect(0,0,c.width,c.height);
   x.textBaseline='top';
 
-  /* the person, large on the left, clearly labelled as image 1 */
   x.fillStyle='#1a1a1a';
   x.font='600 20px -apple-system,Helvetica,Arial';
   x.fillText('1 — THE PERSON',PAD,PAD);
   if(S.anchor){
     try{
       const ai=await loadImg(S.anchor);
-      const scale=Math.min(anchorW/ai.width,anchorH/ai.height);
-      const w=ai.width*scale,h=ai.height*scale;
+      const sc=Math.min(anchorW/ai.width,anchorH/ai.height);
+      const w=ai.width*sc,h=ai.height*sc;
       x.drawImage(ai,PAD+(anchorW-w)/2,PAD+LABEL,w,h);
     }catch(e){}
   }
@@ -1469,10 +1494,35 @@ async function compositeOutfit(o){
     x.strokeRect(gx,gy,cellW,cellW);
     x.fillStyle='#666666';
     x.font='15px -apple-system,Helvetica,Arial';
-    const cap=[it.color,it.detail].filter(Boolean).join(' ').slice(0,34);
-    x.fillText(cap,gx,gy+cellW+6);
+    x.fillText([it.color,it.detail].filter(Boolean).join(' ').slice(0,34),gx,gy+cellW+6);
   }
-  return c.toDataURL('image/jpeg',0.9);
+
+  if(embed){
+    const fy=topH;
+    x.fillStyle='#f5f5f5';x.fillRect(0,fy,W,footH);
+    x.fillStyle='#e0e0e0';x.fillRect(0,fy,W,2);
+    x.fillStyle='#1a1a1a';
+    x.font='600 19px -apple-system,Helvetica,Arial';
+    x.fillText('INSTRUCTIONS — READ AND FOLLOW, DO NOT COPY THIS TEXT INTO THE IMAGE',PAD,fy+PAD);
+    x.font='18px -apple-system,Helvetica,Arial';
+    x.fillStyle='#2c2c2a';
+    lines.forEach((ln,i)=>x.fillText(ln,PAD,fy+PAD+34+i*lineH));
+  }
+  return c.toDataURL('image/jpeg',0.92);
+}
+
+async function downloadSheet(){
+  const o=S.outfits[S.i];if(!o)return;
+  try{
+    const sheet=await compositeOutfit(o,embedPrompt());
+    const file=dataUrlToFile(sheet,'outfit.jpg');
+    if(navigator.share&&file&&navigator.canShare&&navigator.canShare({files:[file]})){
+      await navigator.share({files:[file],title:'Outfit sheet'});
+      return;
+    }
+    const a=document.createElement('a');
+    a.href=sheet;a.download='outfit.jpg';a.click();
+  }catch(e){if(!(e&&e.name==='AbortError'))alert('Could not save: '+(e.message||e))}
 }
 
 async function shareSheet(){
@@ -1480,9 +1530,14 @@ async function shareSheet(){
   const btn=document.getElementById('share-btn');
   if(btn){btn.disabled=true;btn.textContent='Building…'}
   try{
-    const sheet=await compositeOutfit(o);
+    const embed=embedPrompt();
+    const sheet=await compositeOutfit(o,embed);
     const file=dataUrlToFile(sheet,'outfit.jpg');
-    const text=sharePrompt(o,true);
+    /* when the prompt is printed on the sheet, keep the shared text to a short
+       nudge — the instructions travel inside the picture */
+    const text=embed
+      ? 'Follow the instructions printed at the bottom of this image.'
+      : sharePrompt(o,true);
     if(navigator.share&&file&&navigator.canShare&&navigator.canShare({files:[file]})){
       await navigator.share({files:[file],text:text,title:o.name||'Outfit'});
     }else if(navigator.share){
@@ -1499,13 +1554,18 @@ async function shareSheet(){
 async function previewSheet(){
   const o=S.outfits[S.i];if(!o)return;
   try{
-    const sheet=await compositeOutfit(o);
+    const sheet=await compositeOutfit(o,embedPrompt());
     const slot=document.getElementById('outfit-display');
     const box=document.createElement('div');
     box.className='card';
     box.innerHTML='<b style="font-size:13px">Reference sheet</b>'+
       '<img src="'+sheet+'" style="width:100%;border-radius:8px;margin:.5rem 0;border:1px solid var(--border)">'+
+      '<label style="font-size:12px;display:flex;align-items:center;gap:6px;margin:0 0 .5rem">'+
+      '<input type="checkbox" '+(embedPrompt()?'checked':'')+
+      ' onchange="ls(\'embed-prompt\',this.checked?\'1\':\'0\');this.closest(\'.card\').remove();previewSheet()" '+
+      'style="width:auto;margin:0"> Print the instructions onto the image</label>'+
       '<div class="row"><button class="sm" onclick="shareSheet()">Send this</button>'+
+      '<button class="sm" onclick="downloadSheet()">Save image</button>'+
       '<button class="sm" onclick="this.closest(\'.card\').remove()">Close</button></div>';
     slot.appendChild(box);
     box.scrollIntoView({behavior:'smooth',block:'nearest'});
