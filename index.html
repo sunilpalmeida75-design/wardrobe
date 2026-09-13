@@ -272,7 +272,7 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
 
 </div>
 <script>
-const BUILD='v19 · 2026-09-13 · share via long-press';
+const BUILD='v20 · 2026-09-13 · png data url';
 const S={items:[],outfits:[],i:0,renders:{},imageModels:[],meta:{},anchor:'',show:60,dshow:25,filter:'',cancel:false};
 const OR='https://openrouter.ai/api/v1';
 const FRAME='Full-body standing fashion lookbook photograph, framed head to toe. The entire figure is inside the frame with clear empty space above the head and below the feet — do not crop at the ankles, knees, shins or waist. Weight on one leg, shoulders square to camera, arms relaxed at sides, chin level, confident natural posture. Shot at eye level, 85mm lens, evenly lit plain light-grey studio backdrop, sharp focus.';
@@ -1501,25 +1501,12 @@ async function compositeOutfit(o,embed){
     x.fillStyle='#2c2c2a';
     lines.forEach((ln,i)=>x.fillText(ln,PAD,fy+PAD+34+i*lineH));
   }
-  /* toBlob reports the type the browser actually encoded. Safari does not
-     always honour a jpeg request, and a .jpg name on png bytes is rejected by
-     iOS share extensions — so the extension is derived from the result. */
-  const blob=await new Promise(res=>{
-    if(c.toBlob)c.toBlob(b=>res(b),'image/jpeg',0.92);
-    else res(null);
-  });
-  if(blob)return {blob:blob,type:blob.type||'image/png',url:URL.createObjectURL(blob),revoke:true};
-  const url=c.toDataURL('image/jpeg',0.92);
-  const m=url.match(/^data:([^;]+);/);
-  return {blob:null,type:(m&&m[1])||'image/png',url:url,revoke:false};
+  /* A data URL, not a blob: URL. Long-pressing a blob: image on iOS offers no
+     filename or type and shares as "blob"; a data URL shares as a real PNG.
+     PNG also keeps the printed instruction text crisp. */
+  return c.toDataURL('image/png');
 }
 
-function extFor(type){
-  if(/jpe?g/i.test(type))return 'jpg';
-  if(/png/i.test(type))return 'png';
-  if(/webp/i.test(type))return 'webp';
-  return 'png';
-}
 /* iOS revokes transient user activation across an await, so the sheet has to
    exist BEFORE the tap. It is built in the background when an outfit is shown;
    the share call then runs with no async work in front of it. */
@@ -1531,10 +1518,9 @@ async function prepareSheet(o,silent){
   if(S.sheetBuilding===k)return null;
   S.sheetBuilding=k;
   try{
-    if(S.sheet&&S.sheet.revoke&&S.sheet.url)URL.revokeObjectURL(S.sheet.url);
-    const sh=await compositeOutfit(o,embedPrompt());
-    S.sheet={key:k,url:sh.url,type:sh.type,revoke:sh.revoke,blob:sh.blob,
-             name:'outfit.'+extFor(sh.type),size:sh.blob?sh.blob.size:0};
+    const url=await compositeOutfit(o,embedPrompt());
+    S.sheet={key:k,url:url,type:'image/png',name:'outfit.png',
+             size:Math.round(url.length*0.75)};
     return S.sheet;
   }catch(e){
     if(!silent)console.warn('sheet build failed:',e);
@@ -1556,7 +1542,7 @@ function downloadSheet(){
     return;
   }
   const a=document.createElement('a');
-  a.href=S.sheet.url;a.download=S.sheet.name||('outfit.'+extFor(S.sheet.type));a.click();
+  a.href=S.sheet.url;a.download='outfit.png';a.click();
   const d=document.getElementById('dl-btn');
   if(d){d.disabled=false;d.textContent='Save image'}
 }
@@ -1565,7 +1551,7 @@ async function previewSheet(){
   const o=S.outfits[S.i];if(!o)return;
   try{
     const built=await prepareSheet(o);
-    const sheet=(built&&built.url)||(await compositeOutfit(o,embedPrompt())).url;
+    const sheet=(built&&built.url)||await compositeOutfit(o,embedPrompt());
     const slot=document.getElementById('outfit-display');
     const old=document.getElementById('sheet-preview');
     if(old)old.remove();
