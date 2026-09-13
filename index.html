@@ -259,12 +259,16 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
     <button onclick="shiftOutfit(-1)">← Prev</button>
     <button onclick="shiftOutfit(1)">Next →</button>
   </div>
+  <div class="row" style="margin-bottom:.5rem">
+    <button onclick="shareOutfit()">Send to another app</button>
+    <button onclick="copyOutfitPrompt()">Copy prompt</button>
+  </div>
   <button onclick="go('s-models')">Change models</button>
 </div>
 
 </div>
 <script>
-const BUILD='v13 · 2026-09-13 · on-demand renders';
+const BUILD='v14 · 2026-09-13 · share to other apps';
 const S={items:[],outfits:[],i:0,renders:{},imageModels:[],meta:{},anchor:'',show:60,dshow:25,filter:'',cancel:false};
 const OR='https://openrouter.ai/api/v1';
 const FRAME='Full-body standing fashion lookbook photograph, framed head to toe. The entire figure is inside the frame with clear empty space above the head and below the feet — do not crop at the ankles, knees, shins or waist. Weight on one leg, shoulders square to camera, arms relaxed at sides, chin level, confident natural posture. Shot at eye level, 85mm lens, evenly lit plain light-grey studio backdrop, sharp focus.';
@@ -1365,6 +1369,76 @@ function showOutfit(force){
     renderBlock+'</div>';
 
   if(!cached&&(rm==='auto'||force))renderOutfit(o,'render-slot',force);
+}
+
+/* ---------- send the outfit to another app ---------- */
+function dataUrlToFile(dataUrl,name){
+  const m=String(dataUrl||'').match(/^data:([^;]+);base64,(.+)$/);
+  if(!m)return null;
+  const bin=atob(m[2]);
+  const buf=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++)buf[i]=bin.charCodeAt(i);
+  return new File([buf],name,{type:m[1]});
+}
+
+/* Written for a fresh app with no memory of this conversation: the images
+   arrive in order and the text has to explain what each one is. */
+function sharePrompt(o){
+  const worn=(o.indices||[]).map(itemById).filter(Boolean);
+  const withPhoto=worn.filter(i=>i.image);
+  const strict=mode()==='strict';
+  let n=1;
+  const lines=withPhoto.map(i=>'Image '+(++n)+' — '+[i.color,i.pattern,i.detail,i.type].filter(Boolean).join(' ')).join('\n');
+  const noPhoto=worn.filter(i=>!i.image).map(i=>'• '+(i.desc||[i.color,i.type].filter(Boolean).join(' ')));
+  const subs=strict?substitutions(withPhoto):[];
+  const adds=strict?[]:(o.additions||[]);
+
+  let t='Image 1 is the person. Generate a new photograph of THIS person wearing the clothes from the other images.\n\n'+
+    'Keep their face, hair, body proportions and skin tone exactly as in image 1 — it must be recognisably the same individual.\n\n'+
+    lines;
+  if(noPhoto.length)t+='\n\nAlso wearing (no photo supplied, follow the description):\n'+noPhoto.join('\n');
+  if(adds.length)t+='\n\nAdd these complementary pieces: '+adds.join('; ')+'.';
+  if(subs.length)t+='\n\n'+subs.map(x=>x.text).join('\n');
+  if(strict)t+='\n\nUse nothing beyond what is described here. Do not add jackets, belts, bags, jewellery or hats that are not listed.';
+  t+='\n\nThe person must wear ALL of these garments together as one complete outfit, each reproduced faithfully in colour, pattern and cut.\n\n'+FRAME;
+  return t;
+}
+
+async function shareOutfit(){
+  const o=S.outfits[S.i];if(!o)return;
+  const text=sharePrompt(o);
+  const files=[];
+  const a=dataUrlToFile(S.anchor,'1-person.jpg');
+  if(a)files.push(a);
+  (o.indices||[]).map(itemById).filter(i=>i&&i.image).forEach((i,n)=>{
+    const f=dataUrlToFile(i.image,(n+2)+'-'+String(i.type||'item').replace(/\W+/g,'')+'.jpg');
+    if(f)files.push(f);
+  });
+
+  if(!navigator.share){
+    copyText(text,'No share support in this browser — prompt copied instead.');
+    return;
+  }
+  try{
+    if(files.length&&navigator.canShare&&navigator.canShare({files:files})){
+      await navigator.share({files:files,text:text,title:o.name||'Outfit'});
+      return;
+    }
+    await navigator.share({text:text,title:o.name||'Outfit'});
+  }catch(e){
+    if(e&&e.name==='AbortError')return;
+    copyText(text,'Share failed ('+e.message+') — prompt copied instead.');
+  }
+}
+
+function copyText(t,msg){
+  if(navigator.clipboard&&navigator.clipboard.writeText)
+    navigator.clipboard.writeText(t).then(()=>alert(msg||'Copied.'),()=>alert('Could not copy.'));
+  else alert(msg||'Copy not supported.');
+}
+function copyOutfitPrompt(){
+  const o=S.outfits[S.i];if(!o)return;
+  copyText(sharePrompt(o),'Prompt copied. Paste it into the other app along with the photos.');
 }
 
 function updateSpend(){
