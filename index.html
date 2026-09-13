@@ -272,7 +272,7 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
 
 </div>
 <script>
-const BUILD='v17 · 2026-09-13 · share gesture fix';
+const BUILD='v18 · 2026-09-13 · correct file type';
 const S={items:[],outfits:[],i:0,renders:{},imageModels:[],meta:{},anchor:'',show:60,dshow:25,filter:'',cancel:false};
 const OR='https://openrouter.ai/api/v1';
 const FRAME='Full-body standing fashion lookbook photograph, framed head to toe. The entire figure is inside the frame with clear empty space above the head and below the feet — do not crop at the ankles, knees, shins or waist. Weight on one leg, shoulders square to camera, arms relaxed at sides, chin level, confident natural posture. Shot at eye level, 85mm lens, evenly lit plain light-grey studio backdrop, sharp focus.';
@@ -1510,7 +1510,29 @@ async function compositeOutfit(o,embed){
     x.fillStyle='#2c2c2a';
     lines.forEach((ln,i)=>x.fillText(ln,PAD,fy+PAD+34+i*lineH));
   }
-  return c.toDataURL('image/jpeg',0.92);
+  /* toBlob reports the type the browser actually encoded. Safari does not
+     always honour a jpeg request, and a .jpg name on png bytes is rejected by
+     iOS share extensions — so the extension is derived from the result. */
+  const blob=await new Promise(res=>{
+    if(c.toBlob)c.toBlob(b=>res(b),'image/jpeg',0.92);
+    else res(null);
+  });
+  if(blob)return {blob:blob,type:blob.type||'image/png',url:URL.createObjectURL(blob),revoke:true};
+  const url=c.toDataURL('image/jpeg',0.92);
+  const m=url.match(/^data:([^;]+);/);
+  return {blob:null,type:(m&&m[1])||'image/png',url:url,revoke:false};
+}
+
+function extFor(type){
+  if(/jpe?g/i.test(type))return 'jpg';
+  if(/png/i.test(type))return 'png';
+  if(/webp/i.test(type))return 'webp';
+  return 'png';
+}
+function sheetFile(sheet){
+  const name='outfit.'+extFor(sheet.type);
+  if(sheet.blob)return new File([sheet.blob],name,{type:sheet.type});
+  return dataUrlToFile(sheet.url,name);
 }
 
 /* iOS revokes transient user activation across an await, so the sheet has to
@@ -1524,8 +1546,12 @@ async function prepareSheet(o,silent){
   if(S.sheetBuilding===k)return null;
   S.sheetBuilding=k;
   try{
-    const url=await compositeOutfit(o,embedPrompt());
-    S.sheet={key:k,url:url,file:dataUrlToFile(url,'outfit.jpg')};
+    if(S.sheet&&S.sheet.revoke&&S.sheet.url)URL.revokeObjectURL(S.sheet.url);
+    const sh=await compositeOutfit(o,embedPrompt());
+    const file=sheetFile(sh);
+    S.sheet={key:k,url:sh.url,type:sh.type,revoke:sh.revoke,blob:sh.blob,file:file,
+             name:file?file.name:'',size:file?file.size:0,
+             canShare:!!(navigator.canShare&&file&&navigator.canShare({files:[file]}))};
     markSheetReady(true);
     return S.sheet;
   }catch(e){
@@ -1559,20 +1585,40 @@ function shareSheet(){
   const text=embedPrompt()
     ? 'Follow the instructions printed at the bottom of this image.'
     : sharePrompt(o,true);
+  if(!navigator.share){copyText(text,'Sharing is not supported in this browser — prompt copied.');return}
+  if(!file){shareDiag('The image could not be turned into a file.');return}
+  if(!(navigator.canShare&&navigator.canShare({files:[file]}))){
+    shareDiag('This browser refused the file ('+S.sheet.type+', '+Math.round(S.sheet.size/1024)+' KB).');
+    return;
+  }
   try{
-    if(navigator.canShare&&navigator.canShare({files:[file]})){
-      navigator.share({files:[file],text:text,title:o.name||'Outfit'})
-        .catch(()=>{})
-        .finally(resetShareUI);
-    }else if(navigator.share){
-      navigator.share({text:text,title:o.name||'Outfit'}).catch(()=>{}).finally(resetShareUI);
-    }else{
-      copyText(text,'Sharing is not supported here — prompt copied.');
-    }
+    navigator.share({files:[file]})
+      .catch(e=>{if(e&&e.name!=='AbortError')shareDiag(e.name+': '+e.message)})
+      .finally(resetShareUI);
   }catch(e){
     resetShareUI();
-    alert('Could not share: '+(e.message||e));
+    shareDiag((e.name||'Error')+': '+e.message);
   }
+}
+
+/* Surface exactly what the share layer objected to, on screen, since there is
+   no console on the phone. */
+function shareDiag(msg){
+  resetShareUI();
+  const sh=S.sheet||{};
+  const body='<div class="box warn"><b>Share did not open.</b><br>'+escapeHtml(msg)+
+    '<br><span class="muted">file: '+escapeHtml(sh.name||'none')+' · type: '+escapeHtml(sh.type||'?')+
+    ' · '+Math.round((sh.size||0)/1024)+' KB · canShare: '+(sh.canShare?'yes':'no')+'</span>'+
+    '<br><br>Use <b>Save image</b> and upload it, or open Preview sheet and press and hold the image.'+
+    '<div class="row" style="margin-top:.5rem"><button class="sm" onclick="downloadSheet()">Save image</button>'+
+    '<button class="sm" onclick="previewSheet()">Preview sheet</button></div></div>';
+  const slot=document.getElementById('outfit-display');
+  const old=document.getElementById('share-diag');
+  if(old)old.remove();
+  const d=document.createElement('div');
+  d.id='share-diag';d.innerHTML=body;
+  slot.appendChild(d);
+  d.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
 function resetShareUI(){
@@ -1600,7 +1646,7 @@ function downloadSheet(){
     return;
   }
   const a=document.createElement('a');
-  a.href=S.sheet.url;a.download='outfit.jpg';a.click();
+  a.href=S.sheet.url;a.download=S.sheet.name||('outfit.'+extFor(S.sheet.type));a.click();
   resetShareUI();
 }
 
@@ -1608,7 +1654,7 @@ async function previewSheet(){
   const o=S.outfits[S.i];if(!o)return;
   try{
     const built=await prepareSheet(o);
-    const sheet=(built&&built.url)||await compositeOutfit(o,embedPrompt());
+    const sheet=(built&&built.url)||(await compositeOutfit(o,embedPrompt())).url;
     const slot=document.getElementById('outfit-display');
     const old=document.getElementById('sheet-preview');
     if(old)old.remove();
@@ -1616,7 +1662,8 @@ async function previewSheet(){
     box.className='card';box.id='sheet-preview';
     box.innerHTML='<b style="font-size:13px">Reference sheet</b>'+
       '<img src="'+sheet+'" style="width:100%;border-radius:8px;margin:.5rem 0;border:1px solid var(--border)">'+
-      '<p class="muted" style="margin:0 0 .5rem">Press and hold the image above to share it directly — that route always works, even when the button does not.</p>'+
+      '<p class="muted" style="margin:0 0 .5rem">Press and hold the image above to share it directly — that route always works, even when the button does not.'+
+      (S.sheet?'<br>'+escapeHtml(S.sheet.name||'')+' · '+escapeHtml(S.sheet.type||'')+' · '+Math.round((S.sheet.size||0)/1024)+' KB':'')+'</p>'+
       '<label style="font-size:12px;display:flex;align-items:center;gap:6px;margin:0 0 .5rem">'+
       '<input type="checkbox" '+(embedPrompt()?'checked':'')+
       ' onchange="ls(\'embed-prompt\',this.checked?\'1\':\'0\');S.sheet=null;previewSheet()" style="width:auto;margin:0">'+
