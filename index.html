@@ -260,15 +260,19 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
     <button onclick="shiftOutfit(1)">Next →</button>
   </div>
   <div class="row" style="margin-bottom:.5rem">
-    <button onclick="shareOutfit()">Send to another app</button>
+    <button id="share-btn" onclick="shareSheet()">Send as one image</button>
     <button onclick="copyOutfitPrompt()">Copy prompt</button>
+  </div>
+  <div class="row" style="margin-bottom:.5rem">
+    <button class="sm" onclick="shareOutfit()">Send separate photos</button>
+    <button class="sm" onclick="previewSheet()">Preview sheet</button>
   </div>
   <button onclick="go('s-models')">Change models</button>
 </div>
 
 </div>
 <script>
-const BUILD='v14 · 2026-09-13 · share to other apps';
+const BUILD='v15 · 2026-09-13 · one-image share';
 const S={items:[],outfits:[],i:0,renders:{},imageModels:[],meta:{},anchor:'',show:60,dshow:25,filter:'',cancel:false};
 const OR='https://openrouter.ai/api/v1';
 const FRAME='Full-body standing fashion lookbook photograph, framed head to toe. The entire figure is inside the frame with clear empty space above the head and below the feet — do not crop at the ankles, knees, shins or waist. Weight on one leg, shoulders square to camera, arms relaxed at sides, chin level, confident natural posture. Shot at eye level, 85mm lens, evenly lit plain light-grey studio backdrop, sharp focus.';
@@ -1383,25 +1387,129 @@ function dataUrlToFile(dataUrl,name){
 
 /* Written for a fresh app with no memory of this conversation: the images
    arrive in order and the text has to explain what each one is. */
-function sharePrompt(o){
+function sharePrompt(o,oneSheet){
   const worn=(o.indices||[]).map(itemById).filter(Boolean);
   const withPhoto=worn.filter(i=>i.image);
   const strict=mode()==='strict';
   let n=1;
-  const lines=withPhoto.map(i=>'Image '+(++n)+' — '+[i.color,i.pattern,i.detail,i.type].filter(Boolean).join(' ')).join('\n');
+  const lines=withPhoto.map(i=>(oneSheet?'Panel ':'Image ')+(++n)+' — '+[i.color,i.pattern,i.detail,i.type].filter(Boolean).join(' ')).join('\n');
   const noPhoto=worn.filter(i=>!i.image).map(i=>'• '+(i.desc||[i.color,i.type].filter(Boolean).join(' ')));
   const subs=strict?substitutions(withPhoto):[];
   const adds=strict?[]:(o.additions||[]);
 
-  let t='Image 1 is the person. Generate a new photograph of THIS person wearing the clothes from the other images.\n\n'+
-    'Keep their face, hair, body proportions and skin tone exactly as in image 1 — it must be recognisably the same individual.\n\n'+
-    lines;
+  let t=oneSheet
+    ? 'The attached image is a labelled reference sheet. Panel 1 is the person. The other numbered panels are individual garments.\n\n'+
+      'Generate a new photograph of the person from panel 1 wearing all of the garments shown in the other panels. '+
+      'Keep their face, hair, body proportions and skin tone exactly as in panel 1 — it must be recognisably the same individual. '+
+      'Do not reproduce the reference sheet layout, the panel borders or the labels in your output.\n\n'+lines
+    : 'Image 1 is the person. Generate a new photograph of THIS person wearing the clothes from the other images.\n\n'+
+      'Keep their face, hair, body proportions and skin tone exactly as in image 1 — it must be recognisably the same individual.\n\n'+
+      lines;
   if(noPhoto.length)t+='\n\nAlso wearing (no photo supplied, follow the description):\n'+noPhoto.join('\n');
   if(adds.length)t+='\n\nAdd these complementary pieces: '+adds.join('; ')+'.';
   if(subs.length)t+='\n\n'+subs.map(x=>x.text).join('\n');
   if(strict)t+='\n\nUse nothing beyond what is described here. Do not add jackets, belts, bags, jewellery or hats that are not listed.';
   t+='\n\nThe person must wear ALL of these garments together as one complete outfit, each reproduced faithfully in colour, pattern and cut.\n\n'+FRAME;
   return t;
+}
+
+/* iOS filters the share sheet to apps that accept every item being sent.
+   Most AI apps declare a max image count of 1, so four files plus text hides
+   them. One composite image passes that filter. */
+function loadImg(src){
+  return new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=src});
+}
+async function compositeOutfit(o){
+  const worn=(o.indices||[]).map(itemById).filter(i=>i&&i.image);
+  const W=1200,PAD=24,LABEL=34;
+  const anchorW=Math.round(W*0.42);
+  const cols=2;
+  const cellW=Math.round((W-anchorW-PAD*3)/cols);
+  const rows=Math.max(1,Math.ceil(worn.length/cols));
+  const anchorH=Math.round(anchorW*4/3);
+  const gridH=rows*(cellW+LABEL)+(rows-1)*PAD;
+  const H=Math.max(anchorH,gridH)+PAD*2+LABEL;
+
+  const c=document.createElement('canvas');
+  c.width=W;c.height=H;
+  const x=c.getContext('2d');
+  x.fillStyle='#ffffff';x.fillRect(0,0,W,H);
+  x.textBaseline='top';
+
+  /* the person, large on the left, clearly labelled as image 1 */
+  x.fillStyle='#1a1a1a';
+  x.font='600 20px -apple-system,Helvetica,Arial';
+  x.fillText('1 — THE PERSON',PAD,PAD);
+  if(S.anchor){
+    try{
+      const ai=await loadImg(S.anchor);
+      const scale=Math.min(anchorW/ai.width,anchorH/ai.height);
+      const w=ai.width*scale,h=ai.height*scale;
+      x.drawImage(ai,PAD+(anchorW-w)/2,PAD+LABEL,w,h);
+    }catch(e){}
+  }
+  x.strokeStyle='#e0e0e0';x.lineWidth=2;
+  x.strokeRect(PAD,PAD+LABEL,anchorW,anchorH);
+
+  for(let n=0;n<worn.length;n++){
+    const it=worn[n];
+    const col=n%cols,row=Math.floor(n/cols);
+    const gx=PAD*2+anchorW+col*(cellW+PAD);
+    const gy=PAD+LABEL+row*(cellW+LABEL+PAD);
+    x.fillStyle='#1a1a1a';
+    x.font='600 17px -apple-system,Helvetica,Arial';
+    x.fillText(String(n+2)+' — '+String(it.type||'item').toUpperCase(),gx,gy-LABEL+8);
+    try{
+      const gi=await loadImg(it.image);
+      const sc=Math.min(cellW/gi.width,cellW/gi.height);
+      const w=gi.width*sc,h=gi.height*sc;
+      x.drawImage(gi,gx+(cellW-w)/2,gy+(cellW-h)/2,w,h);
+    }catch(e){}
+    x.strokeStyle='#e0e0e0';x.lineWidth=2;
+    x.strokeRect(gx,gy,cellW,cellW);
+    x.fillStyle='#666666';
+    x.font='15px -apple-system,Helvetica,Arial';
+    const cap=[it.color,it.detail].filter(Boolean).join(' ').slice(0,34);
+    x.fillText(cap,gx,gy+cellW+6);
+  }
+  return c.toDataURL('image/jpeg',0.9);
+}
+
+async function shareSheet(){
+  const o=S.outfits[S.i];if(!o)return;
+  const btn=document.getElementById('share-btn');
+  if(btn){btn.disabled=true;btn.textContent='Building…'}
+  try{
+    const sheet=await compositeOutfit(o);
+    const file=dataUrlToFile(sheet,'outfit.jpg');
+    const text=sharePrompt(o,true);
+    if(navigator.share&&file&&navigator.canShare&&navigator.canShare({files:[file]})){
+      await navigator.share({files:[file],text:text,title:o.name||'Outfit'});
+    }else if(navigator.share){
+      await navigator.share({text:text,title:o.name||'Outfit'});
+    }else{
+      copyText(text,'Prompt copied.');
+    }
+  }catch(e){
+    if(!(e&&e.name==='AbortError'))alert('Could not share: '+(e.message||e));
+  }
+  if(btn){btn.disabled=false;btn.textContent='Send as one image'}
+}
+
+async function previewSheet(){
+  const o=S.outfits[S.i];if(!o)return;
+  try{
+    const sheet=await compositeOutfit(o);
+    const slot=document.getElementById('outfit-display');
+    const box=document.createElement('div');
+    box.className='card';
+    box.innerHTML='<b style="font-size:13px">Reference sheet</b>'+
+      '<img src="'+sheet+'" style="width:100%;border-radius:8px;margin:.5rem 0;border:1px solid var(--border)">'+
+      '<div class="row"><button class="sm" onclick="shareSheet()">Send this</button>'+
+      '<button class="sm" onclick="this.closest(\'.card\').remove()">Close</button></div>';
+    slot.appendChild(box);
+    box.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }catch(e){alert('Could not build the sheet: '+e.message)}
 }
 
 async function shareOutfit(){
