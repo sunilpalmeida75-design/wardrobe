@@ -76,15 +76,37 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
 <div class="container">
 
 <div class="screen active" id="s-key">
-  <div class="header"><h1>Wardrobe AI</h1><p>OpenRouter key</p></div>
+  <div class="header"><h1>Wardrobe AI</h1><p id="build-stamp">loading…</p></div>
   <div class="box info">Add either or both. Keys stay in this browser. With both, you can pick a different provider for each job and fall back when one hits a quota.</div>
   <label>OpenRouter key <span class="muted">(openrouter.ai/keys)</span></label>
   <input type="password" id="orkey" placeholder="sk-or-v1-...">
   <label>Google AI Studio key <span class="muted">(aistudio.google.com/apikey)</span></label>
   <input type="password" id="gkeyai" placeholder="AIza...">
+
+  <details style="margin:.5rem 0 1rem">
+    <summary class="muted" style="cursor:pointer">Local models on your own machine (optional)</summary>
+    <div style="padding-top:.6rem">
+      <label>Ollama URL <span class="muted">— analyst and stylist</span></label>
+      <input type="text" id="ollamaurl" placeholder="http://localhost:11434">
+      <label>ComfyUI URL <span class="muted">— renderer</span></label>
+      <input type="text" id="comfyurl" placeholder="http://127.0.0.1:8188">
+      <label>ComfyUI workflow (API format JSON)</label>
+      <textarea id="comfyflow" rows="5" placeholder='Paste the workflow exported with "Save (API Format)"'></textarea>
+      <div class="box info" style="font-size:12px">
+        In the pasted workflow, replace the values you want the app to fill with these tokens:<br>
+        <b>%PROMPT%</b> — the outfit instruction text<br>
+        <b>%ANCHOR%</b> — filename of your anchor photo<br>
+        <b>%GARMENT1%</b>, <b>%GARMENT2%</b>, <b>%GARMENT3%</b> — garment photo filenames<br>
+        Images are uploaded to ComfyUI first, then the tokens become their filenames.
+      </div>
+      <p class="muted">Both servers need CORS enabled: <code>OLLAMA_ORIGINS=*</code> and ComfyUI's <code>--enable-cors-header</code>. Browsers block plain http from an https page, so use local models with the page opened locally.</p>
+    </div>
+  </details>
+
   <div id="key-status"></div>
   <button class="primary" onclick="loadModels()">Fetch my models →</button>
   <button onclick="go('s-catalog')" id="skip-btn" style="display:none">Skip — go to my wardrobe</button>
+  <button class="sm" style="margin-top:.5rem" onclick="hardReload()">Force reload latest version</button>
 </div>
 
 <div class="screen" id="s-models">
@@ -105,6 +127,13 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
     <option value="9:16">9:16 — 768×1344</option>
     <option value="1:1">1:1 — 1024×1024</option>
   </select>
+  <label>When to render the anchor <span class="muted">(renders are the only real cost)</span></label>
+  <select id="rendermode">
+    <option value="manual">On demand — show the clothes, render only when I tap</option>
+    <option value="auto">Automatically for every outfit</option>
+    <option value="off">Never — clothes only, no image generation</option>
+  </select>
+
   <label>What the renderer receives</label>
   <select id="rendersrc">
     <option value="photos">Garment photos as references — best fidelity</option>
@@ -230,11 +259,20 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
     <button onclick="shiftOutfit(-1)">← Prev</button>
     <button onclick="shiftOutfit(1)">Next →</button>
   </div>
+  <div class="row" style="margin-bottom:.5rem">
+    <button id="share-btn" onclick="shareSheet()">Send as one image</button>
+    <button id="dl-btn" onclick="downloadSheet()">Save image</button>
+  </div>
+  <div class="row" style="margin-bottom:.5rem">
+    <button class="sm" onclick="previewSheet()">Preview sheet</button>
+    <button class="sm" onclick="copyOutfitPrompt()">Copy prompt</button>
+  </div>
   <button onclick="go('s-models')">Change models</button>
 </div>
 
 </div>
 <script>
+const BUILD='v17 · 2026-09-13 · share gesture fix';
 const S={items:[],outfits:[],i:0,renders:{},imageModels:[],meta:{},anchor:'',show:60,dshow:25,filter:'',cancel:false};
 const OR='https://openrouter.ai/api/v1';
 const FRAME='Full-body standing fashion lookbook photograph, framed head to toe. The entire figure is inside the frame with clear empty space above the head and below the feet — do not crop at the ankles, knees, shins or waist. Weight on one leg, shoulders square to camera, arms relaxed at sides, chin level, confident natural posture. Shot at eye level, 85mm lens, evenly lit plain light-grey studio backdrop, sharp focus.';
@@ -245,6 +283,15 @@ const go=id=>{document.querySelectorAll('.screen').forEach(s=>s.classList.remove
 const ls=(k,v)=>v===undefined?(localStorage.getItem(k)||''):localStorage.setItem(k,v);
 const okey=()=>ls('or-key');
 const aspect=()=>ls('or-aspect')||'3:4',mode=()=>ls('mode')||'strict',renderSrc=()=>ls('or-rendersrc')||'photos';
+const renderMode=()=>ls('render-mode')||'manual';
+const embedPrompt=()=>ls('embed-prompt')!=='0';
+function renderCost(){
+  const sl=slotOf(ls('or-image'));
+  if(!sl.id)return '';
+  if(sl.p==='l')return 'free';
+  const m=S.meta[ls('or-image')];
+  return (m&&m.image)?('about $'+m.image.toFixed(3)):'';
+}
 const concurrency=()=>parseInt(ls('or-conc')||'4',10);
 
 /* ============ image downscaling ============
@@ -360,8 +407,13 @@ async function storageBanner(){
 }
 
 async function boot(){
+  const bs=document.getElementById('build-stamp');
+  if(bs)bs.textContent='Build '+BUILD;
   if(orKey())document.getElementById('orkey').value=orKey();
   if(gaiKey())document.getElementById('gkeyai').value=gaiKey();
+  document.getElementById('ollamaurl').value=ollamaUrl();
+  document.getElementById('comfyurl').value=comfyUrl();
+  document.getElementById('comfyflow').value=ls('comfy-flow');
   setMode(mode());
   try{
     await ready();
@@ -383,19 +435,28 @@ async function boot(){
 window.addEventListener('DOMContentLoaded',boot);
 
 /* ============ api ============ */
+/* Reloads past the browser and CDN cache by changing the URL, which every
+   cache layer treats as a different resource. */
+function hardReload(){
+  const u=new URL(location.href);
+  u.searchParams.set('v',Date.now().toString(36));
+  location.replace(u.toString());
+}
+
 /* ================= providers =================
    A slot value is "<provider>::<model id>", so each of the three jobs can sit
    on a different service. ask() takes one neutral request shape and renders it
    into whichever wire format that provider speaks. */
 const GEMAPI='https://generativelanguage.googleapis.com/v1beta';
-const PROVNAME={or:'OpenRouter',g:'Google AI Studio'};
+const PROVNAME={or:'OpenRouter',g:'Google AI Studio',l:'Local'};
 const orKey=()=>ls('or-key'), gaiKey=()=>ls('gai-key');
+const ollamaUrl=()=>ls('ollama-url'), comfyUrl=()=>ls('comfy-url');
 function slotOf(v){
   const i=String(v||'').indexOf('::');
   return i<0?{p:'or',id:String(v||'')}:{p:v.slice(0,i),id:v.slice(i+2)};
 }
 const slotLabel=sl=>sl.id?(PROVNAME[sl.p]||sl.p)+' · '+sl.id:'(none)';
-const keyFor=p=>p==='g'?gaiKey():orKey();
+const keyFor=p=>p==='l'?(ollamaUrl()||comfyUrl()||''):(p==='g'?gaiKey():orKey());
 
 /* Gemini's responseSchema follows an OpenAPI subset and rejects the
    additionalProperties / strict keywords that OpenAI-style schemas carry. */
@@ -413,6 +474,7 @@ function geminiSchema(sc){
 async function ask(sl,req,trace){
   if(!sl.id)throw new Error('No model selected for this step.');
   if(!keyFor(sl.p))throw new Error('No '+(PROVNAME[sl.p]||sl.p)+' key saved.');
+  if(sl.p==='l')return askLocal(sl,req,trace);
   return sl.p==='g'?askGoogle(sl,req,trace):askOR(sl,req,trace);
 }
 
@@ -440,6 +502,136 @@ async function askOR(sl,req,trace){
   return {text:String(c||''),
           image:im?((im.image_url&&im.image_url.url)||(im.imageUrl&&im.imageUrl.url)||im.url||null):null,
           finish:((d.choices||[])[0]||{}).finish_reason||''};
+}
+
+/* ---------- local: Ollama for text/vision, ComfyUI for images ---------- */
+const b64of=u=>{const m=String(u||'').match(/^data:[^;]+;base64,(.+)$/);return m?m[1]:null};
+
+async function askLocal(sl,req,trace){
+  return req.wantImage?askComfy(sl,req,trace):askOllama(sl,req,trace);
+}
+
+async function askOllama(sl,req,trace){
+  if(!ollamaUrl())throw new Error('No Ollama URL set.');
+  const name=sl.id.replace(/^ollama\//,'');
+  const text=(req.parts||[]).filter(p=>p.text).map(p=>p.text).join('\n\n');
+  const images=(req.parts||[]).filter(p=>p.image).map(p=>b64of(p.image)).filter(Boolean);
+  const body={model:name,stream:false,
+    messages:[Object.assign({role:'user',content:text},images.length?{images:images}:{})],
+    options:{}};
+  if(req.temperature!==undefined)body.options.temperature=req.temperature;
+  if(req.maxTokens)body.options.num_predict=req.maxTokens;
+  /* Ollama takes a JSON schema directly in `format`, or the string "json". */
+  if(req.json)body.format=(typeof req.json==='object')?geminiSchema(req.json):'json';
+
+  const started=Date.now();
+  let r,d;
+  try{
+    r=await fetch(ollamaUrl()+'/api/chat',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  }catch(e){
+    if(trace)trace.push({status:'network',ms:Date.now()-started,model:'ollama · '+name,format:'local',
+      body:e.message+' — is Ollama running, and was it started with OLLAMA_ORIGINS=* ?'});
+    throw new Error('Could not reach Ollama at '+ollamaUrl()+'. '+e.message);
+  }
+  d=await r.json().catch(()=>({}));
+  if(trace)trace.push({status:r.status,ms:Date.now()-started,model:'ollama · '+name,
+    format:req.json?'json':'none',body:JSON.stringify(d).slice(0,900)});
+  if(!r.ok||d.error)throw new Error(d.error||('HTTP '+r.status));
+  return {text:(d.message&&d.message.content)||'',image:null,finish:d.done_reason||''};
+}
+
+async function comfyUpload(dataUrl,name){
+  const b=b64of(dataUrl);
+  if(!b)throw new Error('bad image data');
+  const bin=atob(b);
+  const buf=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++)buf[i]=bin.charCodeAt(i);
+  const fd=new FormData();
+  fd.append('image',new Blob([buf],{type:'image/jpeg'}),name);
+  fd.append('overwrite','true');
+  const r=await fetch(comfyUrl()+'/upload/image',{method:'POST',body:fd});
+  if(!r.ok)throw new Error('ComfyUI upload failed: HTTP '+r.status);
+  const d=await r.json();
+  return d.name||name;
+}
+
+async function askComfy(sl,req,trace){
+  if(!comfyUrl())throw new Error('No ComfyUI URL set.');
+  const tpl=ls('comfy-flow');
+  if(!tpl.trim())throw new Error('No ComfyUI workflow saved. Paste one in settings.');
+
+  const prompt=(req.parts||[]).filter(p=>p.text).map(p=>p.text).join('\n\n');
+  const imgs=(req.parts||[]).filter(p=>p.image).map(p=>p.image);
+  const stamp=Date.now();
+  const started=stamp;
+
+  let flow=tpl;
+  try{
+    if(imgs.length){
+      const anchor=await comfyUpload(imgs[0],'anchor_'+stamp+'.jpg');
+      flow=flow.split('%ANCHOR%').join(anchor);
+      for(let i=1;i<imgs.length&&i<=6;i++){
+        const nm=await comfyUpload(imgs[i],'garment'+i+'_'+stamp+'.jpg');
+        flow=flow.split('%GARMENT'+i+'%').join(nm);
+      }
+    }
+    /* strip any garment tokens the outfit did not fill */
+    flow=flow.replace(/%GARMENT\d%/g,'');
+    flow=flow.split('%PROMPT%').join(JSON.stringify(prompt).slice(1,-1));
+
+    let graph;
+    try{graph=JSON.parse(flow)}
+    catch(e){throw new Error('Workflow is not valid JSON after substitution: '+e.message)}
+
+    const clientId='wardrobe-'+stamp;
+    const qr=await fetch(comfyUrl()+'/prompt',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({prompt:graph,client_id:clientId})});
+    if(!qr.ok){
+      const t=await qr.text();
+      throw new Error('ComfyUI rejected the workflow: HTTP '+qr.status+' '+t.slice(0,200));
+    }
+    const q=await qr.json();
+    const pid=q.prompt_id;
+    if(!pid)throw new Error('No prompt_id returned.');
+
+    /* poll history until the job produces an image */
+    let outName=null,sub='',typ='output';
+    for(let i=0;i<240;i++){
+      await sleep(1000);
+      if(S.cancel)throw new Error('cancelled');
+      const hr=await fetch(comfyUrl()+'/history/'+pid);
+      if(!hr.ok)continue;
+      const h=await hr.json();
+      const entry=h[pid];
+      if(!entry)continue;
+      const outs=entry.outputs||{};
+      for(const k of Object.keys(outs)){
+        const im=(outs[k].images||[])[0];
+        if(im){outName=im.filename;sub=im.subfolder||'';typ=im.type||'output';break}
+      }
+      if(outName)break;
+      if(entry.status&&entry.status.status_str==='error')
+        throw new Error('Workflow errored in ComfyUI — check its console.');
+      const el=document.getElementById('work-status');
+      if(el)el.textContent='Rendering locally… '+(i+1)+'s';
+    }
+    if(!outName)throw new Error('Timed out after 4 minutes waiting for ComfyUI.');
+
+    const vr=await fetch(comfyUrl()+'/view?filename='+encodeURIComponent(outName)+
+      '&subfolder='+encodeURIComponent(sub)+'&type='+encodeURIComponent(typ));
+    if(!vr.ok)throw new Error('Could not fetch the rendered image: HTTP '+vr.status);
+    const blob=await vr.blob();
+    const url=await new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.onerror=rej;fr.readAsDataURL(blob)});
+    if(trace)trace.push({status:200,ms:Date.now()-started,model:'comfyui',format:'image',
+      body:'rendered '+outName+' ('+Math.round(blob.size/1024)+' KB)'});
+    return {text:'',image:url,finish:'stop'};
+  }catch(e){
+    if(trace)trace.push({status:'error',ms:Date.now()-started,model:'comfyui',format:'image',
+      body:(e.message||String(e))+(/Failed to fetch|NetworkError/i.test(e.message||'')
+        ? ' — is ComfyUI running with --enable-cors-header, and is this page served over http rather than https?':'')});
+    throw e;
+  }
 }
 
 async function askGoogle(sl,req,trace){
@@ -557,6 +749,9 @@ async function loadModels(){
   const status=document.getElementById('key-status');
   if(!k&&!g){status.innerHTML='<div class="box warn">Add at least one key.</div>';return}
   ls('or-key',k);ls('gai-key',g);
+  ls('ollama-url',(document.getElementById('ollamaurl').value||'').trim().replace(/\/$/,''));
+  ls('comfy-url',(document.getElementById('comfyurl').value||'').trim().replace(/\/$/,''));
+  ls('comfy-flow',document.getElementById('comfyflow').value||'');
   status.innerHTML='<div class="box info">Fetching model lists…</div>';
   const models=[];const notes=[];
 
@@ -601,13 +796,37 @@ async function loadModels(){
     }catch(e){notes.push('Google: '+e.message)}
   }
 
+  if(ollamaUrl()){
+    try{
+      const r=await fetch(ollamaUrl()+'/api/tags');
+      if(r.ok){
+        const d=await r.json();
+        (d.models||[]).forEach(m=>{
+          models.push({key:'l::ollama/'+m.name,p:'l',id:'ollama/'+m.name,
+            /* Ollama does not report modality, so offer every model in both
+               lists and let the picker decide. */
+            inp:['text','image'],out:['text'],prompt:0,image:0});
+        });
+        if(!(d.models||[]).length)notes.push('Ollama reachable but has no models pulled.');
+      }else notes.push('Ollama: HTTP '+r.status);
+    }catch(e){notes.push('Ollama unreachable at '+ollamaUrl()+' — needs OLLAMA_ORIGINS=*')}
+  }
+  if(comfyUrl()){
+    try{
+      const r=await fetch(comfyUrl()+'/system_stats');
+      if(r.ok)models.push({key:'l::comfyui',p:'l',id:'comfyui',inp:['text','image'],out:['text','image'],prompt:0,image:0});
+      else notes.push('ComfyUI: HTTP '+r.status);
+    }catch(e){notes.push('ComfyUI unreachable at '+comfyUrl()+' — needs --enable-cors-header')}
+  }
+
   if(!models.length){
     status.innerHTML='<div class="box warn">No models available.<br>'+notes.map(escapeHtml).join('<br>')+'</div>';
     return;
   }
 
   S.meta={};models.forEach(m=>S.meta[m.key]=m);
-  const rank=(a,b)=>(a.p===b.p?0:(a.p==='or'?-1:1))||a.id.localeCompare(b.id);
+  const ORDER={l:0,or:1,g:2};
+  const rank=(a,b)=>(ORDER[a.p]-ORDER[b.p])||a.id.localeCompare(b.id);
   const imgs=models.filter(m=>m.out.includes('image')).sort((a,b)=>a.image-b.image||rank(a,b));
   const vis=models.filter(m=>m.inp.includes('image')&&!m.out.includes('image')).sort((a,b)=>a.prompt-b.prompt||rank(a,b));
   const txt=models.filter(m=>m.out.includes('text')&&!m.out.includes('image')).sort((a,b)=>a.prompt-b.prompt||rank(a,b));
@@ -618,14 +837,15 @@ async function loadModels(){
   makeCombo('combo-image',S.imageModels,ls('or-image'),priceNote);
   priceNote();
 
-  const counts=['or','g'].filter(pp=>models.some(m=>m.p===pp))
+  const counts=['or','g','l'].filter(pp=>models.some(m=>m.p===pp))
     .map(pp=>models.filter(m=>m.p===pp).length+' from '+PROVNAME[pp]).join(', ');
   document.getElementById('model-count').innerHTML=
     counts+'.<br>'+vis.length+' read photos, '+txt.length+' style from text, '+imgs.length+' render.'+
-    '<br>Type to filter — start with <b>or::</b> or <b>g::</b> to narrow to one provider.'+
+    '<br>Type to filter — start with <b>or::</b>, <b>g::</b> or <b>l::</b> to narrow to one provider.'+
     (notes.length?'<br><b>'+notes.map(escapeHtml).join('<br>')+'</b>':'');
   document.getElementById('aspect').value=aspect();
   document.getElementById('rendersrc').value=renderSrc();
+  document.getElementById('rendermode').value=renderMode();
   document.getElementById('concurrency').value=String(concurrency());
   document.getElementById('gclient').value=ls('g-client');
   document.getElementById('bkscope').value=ls('bk-scope')||'full';
@@ -635,6 +855,7 @@ function priceNote(){
   const m=S.meta[comboValue('combo-image')];
   const el=document.getElementById('price-note');
   if(!m){el.textContent='';return}
+  if(m.p==='l'){el.textContent='Runs on your own machine — no API cost.';return}
   el.textContent=m.p==='g'
     ?'Google AI Studio — billed against your own Gemini quota. Pro image models have no free tier.'
     :(m.image?('About $'+m.image.toFixed(4)+' per generated image.'):'Per-image pricing not listed.');
@@ -646,6 +867,7 @@ function saveModels(){
   ls('or-vision',v);ls('or-text',t);ls('or-image',comboValue('combo-image'));
   ls('or-aspect',document.getElementById('aspect').value);
   ls('or-rendersrc',document.getElementById('rendersrc').value);
+  ls('render-mode',document.getElementById('rendermode').value);
   ls('or-conc',document.getElementById('concurrency').value);
   ls('g-client',document.getElementById('gclient').value.trim());
   ls('bk-scope',document.getElementById('bkscope').value);
@@ -1065,8 +1287,8 @@ async function renderOutfit(o,slotId,force){
   const sl=slotOf(ls('or-image'));
   const cacheKey=mode()+'|'+renderSrc()+'|'+sl.p+'|'+(o.name||'o')+'|'+(o.indices||[]).join(',');
   const slot=()=>document.getElementById(slotId);
-  if(!force&&S.renders[cacheKey]){if(slot())slot().innerHTML='<img src="'+S.renders[cacheKey]+'">';return}
   if(!sl.id){if(slot())slot().innerHTML='<p class="muted" style="padding:1rem">No renderer selected.</p>';return}
+  S.renderCount=(S.renderCount||0)+1;
 
   const parts=[{image:S.anchor}];
   if(usePhotos)(o.indices||[]).map(itemById).filter(i=>i&&i.image).forEach(i=>parts.push({image:i.image}));
@@ -1080,6 +1302,7 @@ async function renderOutfit(o,slotId,force){
     }
     S.renders[cacheKey]=out.image;
     if(slot())slot().innerHTML='<img src="'+out.image+'">';
+    updateSpend();
   }catch(e){
     S.lastTrace={headline:'Render failed: '+e.message,trace:trace,model:slotLabel(sl)};
     if(slot())slot().innerHTML=renderError(e.message);
@@ -1105,28 +1328,357 @@ function switchImageModel(m){ls('or-image',m);S.renders={};showOutfit(true)}
 function showOutfit(force){
   const o=S.outfits[S.i];if(!o)return;
   const strict=mode()==='strict';
+  const rm=renderMode();
+  const sl=slotOf(ls('or-image'));
+  const cacheKey=mode()+'|'+renderSrc()+'|'+sl.p+'|'+(o.name||'o')+'|'+(o.indices||[]).join(',');
+  const cached=S.renders[cacheKey];
+
   document.getElementById('outfit-counter').textContent=
-    'Outfit '+(S.i+1)+' of '+S.outfits.length+' — '+(strict?'strict':'suggestion')+
-    ' — '+(renderSrc()==='photos'?'photo refs':'text only')+' — '+slotLabel(slotOf(ls('or-image')));
+    'Outfit '+(S.i+1)+' of '+S.outfits.length+' — '+(strict?'strict':'suggestion');
+
   const pics=(o.indices||[]).map(itemById).filter(Boolean);
   const subs=strict?substitutions(pics):[];
   const adds=strict?[]:(o.additions||[]);
-  document.getElementById('outfit-display').innerHTML=
-    '<div class="card"><b style="font-size:15px">'+escapeHtml(o.name||'Look')+'</b>'+
-    '<div class="render" id="render-slot"><div><div class="spinner"></div><p class="muted">Rendering your anchor…</p></div></div>'+
-    '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:.75rem 0">'+
+
+  /* The garments are the answer. A render is an optional extra on top. */
+  const cols=Math.min(pics.length||1,3);
+  const flat='<div style="display:grid;grid-template-columns:repeat('+cols+',1fr);gap:8px;margin:.5rem 0 .75rem">'+
     pics.map(i=>'<div>'+(i.thumb||i.image
-      ? '<img src="'+(i.thumb||i.image)+'" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px">'
-      : '<div style="width:100%;aspect-ratio:1;border:1px dashed var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--muted)">no photo</div>')+
-      '<div class="muted">'+escapeHtml([i.color,i.type].filter(Boolean).join(' '))+'</div></div>').join('')+
-    '</div>'+
-    (subs.length?'<div style="margin-bottom:.5rem">'+subs.map(s=>'<span class="tag sub">'+s.label+'</span>').join('')+'</div>':'')+
-    (adds.length?'<div style="margin-bottom:.5rem"><span class="muted">Not in your wardrobe: </span>'+adds.map(a=>'<span class="tag sug">'+escapeHtml(a)+'</span>').join('')+'</div>':'')+
+      ? '<img src="'+(i.image||i.thumb)+'" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;border:1px solid var(--border)">'
+      : '<div style="width:100%;aspect-ratio:1;border:1px dashed var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted)">no photo</div>')+
+      '<div class="muted" style="margin-top:.2rem">'+escapeHtml([i.color,i.type].filter(Boolean).join(' '))+'</div>'+
+      (i.detail?'<div class="muted" style="font-size:10px">'+escapeHtml(i.detail)+'</div>':'')+
+      '</div>').join('')+'</div>';
+
+  let renderBlock='';
+  if(cached){
+    renderBlock='<div class="render"><img src="'+cached+'"></div>'+
+      '<button class="sm" style="width:100%;margin-bottom:.6rem" onclick="showOutfit(true)">Render again'+
+      (renderCost()?' ('+renderCost()+')':'')+'</button>';
+  }else if(rm==='auto'||force){
+    renderBlock='<div class="render" id="render-slot"><div><div class="spinner"></div><p class="muted">Rendering your anchor…</p></div></div>';
+  }else if(rm==='manual'){
+    renderBlock=sl.id
+      ? '<button class="primary" style="margin:.25rem 0 .6rem" onclick="showOutfit(true)">'+
+        '✨ See this on me'+(renderCost()?' · '+renderCost():'')+'</button>'
+      : '<p class="muted" style="margin-bottom:.6rem">No renderer selected — pick one in Models to generate images.</p>';
+  }
+
+  document.getElementById('outfit-display').innerHTML=
+    '<div class="card"><b style="font-size:16px">'+escapeHtml(o.name||'Look')+'</b>'+
+    flat+
+    (subs.length?'<div style="margin-bottom:.5rem">'+subs.map(x=>'<span class="tag sub">'+x.label+'</span>').join('')+'</div>':'')+
+    (adds.length?'<div style="margin-bottom:.5rem"><span class="muted">Not in your wardrobe: </span>'+adds.map(x=>'<span class="tag sug">'+escapeHtml(x)+'</span>').join('')+'</div>':'')+
     '<p style="font-size:13px;line-height:1.5;margin-bottom:.5rem">'+escapeHtml(o.why||'')+'</p>'+
-    '<p class="muted"><b>Best for:</b> '+escapeHtml(o.occasion||'')+'</p></div>';
-  renderOutfit(o,'render-slot',force);
+    '<p class="muted" style="margin-bottom:.75rem"><b>Best for:</b> '+escapeHtml(o.occasion||'')+'</p>'+
+    renderBlock+'</div>';
+
+  if(!cached&&(rm==='auto'||force))renderOutfit(o,'render-slot',force);
+  /* build the shareable sheet in the background so the Send tap is instant */
+  setTimeout(()=>prepareSheet(o,true),50);
 }
-function shiftOutfit(d){S.i=(S.i+d+S.outfits.length)%S.outfits.length;showOutfit()}
+
+/* ---------- send the outfit to another app ---------- */
+function dataUrlToFile(dataUrl,name){
+  const m=String(dataUrl||'').match(/^data:([^;]+);base64,(.+)$/);
+  if(!m)return null;
+  const bin=atob(m[2]);
+  const buf=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++)buf[i]=bin.charCodeAt(i);
+  return new File([buf],name,{type:m[1]});
+}
+
+/* Written for a fresh app with no memory of this conversation: the images
+   arrive in order and the text has to explain what each one is. */
+function sharePrompt(o,oneSheet){
+  const worn=(o.indices||[]).map(itemById).filter(Boolean);
+  const withPhoto=worn.filter(i=>i.image);
+  const strict=mode()==='strict';
+  let n=1;
+  const lines=withPhoto.map(i=>(oneSheet?'Panel ':'Image ')+(++n)+' — '+[i.color,i.pattern,i.detail,i.type].filter(Boolean).join(' ')).join('\n');
+  const noPhoto=worn.filter(i=>!i.image).map(i=>'• '+(i.desc||[i.color,i.type].filter(Boolean).join(' ')));
+  const subs=strict?substitutions(withPhoto):[];
+  const adds=strict?[]:(o.additions||[]);
+
+  let t=oneSheet
+    ? 'The attached image is a labelled reference sheet. Panel 1 is the person. The other numbered panels are individual garments.\n\n'+
+      'Generate a new photograph of the person from panel 1 wearing all of the garments shown in the other panels. '+
+      'Keep their face, hair, body proportions and skin tone exactly as in panel 1 — it must be recognisably the same individual. '+
+      'Do not reproduce the reference sheet layout, the panel borders or the labels in your output.\n\n'+lines
+    : 'Image 1 is the person. Generate a new photograph of THIS person wearing the clothes from the other images.\n\n'+
+      'Keep their face, hair, body proportions and skin tone exactly as in image 1 — it must be recognisably the same individual.\n\n'+
+      lines;
+  if(noPhoto.length)t+='\n\nAlso wearing (no photo supplied, follow the description):\n'+noPhoto.join('\n');
+  if(adds.length)t+='\n\nAdd these complementary pieces: '+adds.join('; ')+'.';
+  if(subs.length)t+='\n\n'+subs.map(x=>x.text).join('\n');
+  if(strict)t+='\n\nUse nothing beyond what is described here. Do not add jackets, belts, bags, jewellery or hats that are not listed.';
+  t+='\n\nThe person must wear ALL of these garments together as one complete outfit, each reproduced faithfully in colour, pattern and cut.\n\n'+FRAME;
+  return t;
+}
+
+/* iOS filters the share sheet to apps that accept every item being sent.
+   Most AI apps declare a max image count of 1, so four files plus text hides
+   them. One composite image passes that filter. */
+function loadImg(src){
+  return new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=src});
+}
+function wrapLines(ctx,text,maxW){
+  const out=[];
+  String(text).split('\n').forEach(para=>{
+    if(!para.trim()){out.push('');return}
+    let line='';
+    para.split(/\s+/).forEach(w=>{
+      const test=line?line+' '+w:w;
+      if(ctx.measureText(test).width>maxW&&line){out.push(line);line=w}
+      else line=test;
+    });
+    if(line)out.push(line);
+  });
+  return out;
+}
+
+async function compositeOutfit(o,embed){
+  const worn=(o.indices||[]).map(itemById).filter(i=>i&&i.image);
+  const W=1200,PAD=24,LABEL=34;
+  const anchorW=Math.round(W*0.42);
+  const cols=2;
+  const cellW=Math.round((W-anchorW-PAD*3)/cols);
+  const rows=Math.max(1,Math.ceil(worn.length/cols));
+  const anchorH=Math.round(anchorW*4/3);
+  const gridH=rows*(cellW+LABEL)+(rows-1)*PAD;
+  const topH=Math.max(anchorH,gridH)+PAD*2+LABEL;
+
+  /* measure the instruction block before sizing the canvas */
+  let lines=[],lineH=26,footH=0,instr='';
+  if(embed){
+    instr=sharePrompt(o,true);
+    const m=document.createElement('canvas').getContext('2d');
+    m.font='18px -apple-system,Helvetica,Arial';
+    lines=wrapLines(m,instr,W-PAD*2);
+    footH=PAD+34+lines.length*lineH+PAD;
+  }
+
+  const c=document.createElement('canvas');
+  c.width=W;c.height=topH+footH;
+  const x=c.getContext('2d');
+  x.fillStyle='#ffffff';x.fillRect(0,0,c.width,c.height);
+  x.textBaseline='top';
+
+  x.fillStyle='#1a1a1a';
+  x.font='600 20px -apple-system,Helvetica,Arial';
+  x.fillText('1 — THE PERSON',PAD,PAD);
+  if(S.anchor){
+    try{
+      const ai=await loadImg(S.anchor);
+      const sc=Math.min(anchorW/ai.width,anchorH/ai.height);
+      const w=ai.width*sc,h=ai.height*sc;
+      x.drawImage(ai,PAD+(anchorW-w)/2,PAD+LABEL,w,h);
+    }catch(e){}
+  }
+  x.strokeStyle='#e0e0e0';x.lineWidth=2;
+  x.strokeRect(PAD,PAD+LABEL,anchorW,anchorH);
+
+  for(let n=0;n<worn.length;n++){
+    const it=worn[n];
+    const col=n%cols,row=Math.floor(n/cols);
+    const gx=PAD*2+anchorW+col*(cellW+PAD);
+    const gy=PAD+LABEL+row*(cellW+LABEL+PAD);
+    x.fillStyle='#1a1a1a';
+    x.font='600 17px -apple-system,Helvetica,Arial';
+    x.fillText(String(n+2)+' — '+String(it.type||'item').toUpperCase(),gx,gy-LABEL+8);
+    try{
+      const gi=await loadImg(it.image);
+      const sc=Math.min(cellW/gi.width,cellW/gi.height);
+      const w=gi.width*sc,h=gi.height*sc;
+      x.drawImage(gi,gx+(cellW-w)/2,gy+(cellW-h)/2,w,h);
+    }catch(e){}
+    x.strokeStyle='#e0e0e0';x.lineWidth=2;
+    x.strokeRect(gx,gy,cellW,cellW);
+    x.fillStyle='#666666';
+    x.font='15px -apple-system,Helvetica,Arial';
+    x.fillText([it.color,it.detail].filter(Boolean).join(' ').slice(0,34),gx,gy+cellW+6);
+  }
+
+  if(embed){
+    const fy=topH;
+    x.fillStyle='#f5f5f5';x.fillRect(0,fy,W,footH);
+    x.fillStyle='#e0e0e0';x.fillRect(0,fy,W,2);
+    x.fillStyle='#1a1a1a';
+    x.font='600 19px -apple-system,Helvetica,Arial';
+    x.fillText('INSTRUCTIONS — READ AND FOLLOW, DO NOT COPY THIS TEXT INTO THE IMAGE',PAD,fy+PAD);
+    x.font='18px -apple-system,Helvetica,Arial';
+    x.fillStyle='#2c2c2a';
+    lines.forEach((ln,i)=>x.fillText(ln,PAD,fy+PAD+34+i*lineH));
+  }
+  return c.toDataURL('image/jpeg',0.92);
+}
+
+/* iOS revokes transient user activation across an await, so the sheet has to
+   exist BEFORE the tap. It is built in the background when an outfit is shown;
+   the share call then runs with no async work in front of it. */
+function sheetKey(o){return mode()+'|'+(embedPrompt()?'e':'p')+'|'+(o.name||'o')+'|'+(o.indices||[]).join(',')}
+
+async function prepareSheet(o,silent){
+  const k=sheetKey(o);
+  if(S.sheet&&S.sheet.key===k)return S.sheet;
+  if(S.sheetBuilding===k)return null;
+  S.sheetBuilding=k;
+  try{
+    const url=await compositeOutfit(o,embedPrompt());
+    S.sheet={key:k,url:url,file:dataUrlToFile(url,'outfit.jpg')};
+    markSheetReady(true);
+    return S.sheet;
+  }catch(e){
+    if(!silent)console.warn('sheet build failed:',e);
+    S.sheet=null;markSheetReady(false);
+    return null;
+  }finally{S.sheetBuilding=null}
+}
+
+function markSheetReady(ok){
+  const b=document.getElementById('share-btn');
+  if(!b)return;
+  b.disabled=false;
+  b.textContent=ok?'Send as one image':'Build image to send';
+}
+
+/* Synchronous entry point: no await before navigator.share. */
+function shareSheet(){
+  const o=S.outfits[S.i];if(!o)return;
+  const k=sheetKey(o);
+  if(!S.sheet||S.sheet.key!==k||!S.sheet.file){
+    const b=document.getElementById('share-btn');
+    if(b){b.textContent='Preparing…';b.disabled=true}
+    prepareSheet(o).then(sh=>{
+      const bb=document.getElementById('share-btn');
+      if(bb){bb.disabled=false;bb.textContent=sh?'Ready — tap to send':'Build image to send'}
+    });
+    return;
+  }
+  const file=S.sheet.file;
+  const text=embedPrompt()
+    ? 'Follow the instructions printed at the bottom of this image.'
+    : sharePrompt(o,true);
+  try{
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      navigator.share({files:[file],text:text,title:o.name||'Outfit'})
+        .catch(()=>{})
+        .finally(resetShareUI);
+    }else if(navigator.share){
+      navigator.share({text:text,title:o.name||'Outfit'}).catch(()=>{}).finally(resetShareUI);
+    }else{
+      copyText(text,'Sharing is not supported here — prompt copied.');
+    }
+  }catch(e){
+    resetShareUI();
+    alert('Could not share: '+(e.message||e));
+  }
+}
+
+function resetShareUI(){
+  const b=document.getElementById('share-btn');
+  if(b){b.disabled=false;b.textContent='Send as one image'}
+  const d=document.getElementById('dl-btn');
+  if(d){d.disabled=false;d.textContent='Save image'}
+}
+/* Safari sometimes never settles the share promise when the app is resumed,
+   so recover the UI whenever the page becomes visible again. */
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)resetShareUI()});
+window.addEventListener('pageshow',resetShareUI);
+window.addEventListener('focus',resetShareUI);
+
+function downloadSheet(){
+  const o=S.outfits[S.i];if(!o)return;
+  const k=sheetKey(o);
+  if(!S.sheet||S.sheet.key!==k){
+    const d=document.getElementById('dl-btn');
+    if(d){d.textContent='Preparing…';d.disabled=true}
+    prepareSheet(o).then(()=>{
+      const dd=document.getElementById('dl-btn');
+      if(dd){dd.disabled=false;dd.textContent='Ready — tap to save'}
+    });
+    return;
+  }
+  const a=document.createElement('a');
+  a.href=S.sheet.url;a.download='outfit.jpg';a.click();
+  resetShareUI();
+}
+
+async function previewSheet(){
+  const o=S.outfits[S.i];if(!o)return;
+  try{
+    const built=await prepareSheet(o);
+    const sheet=(built&&built.url)||await compositeOutfit(o,embedPrompt());
+    const slot=document.getElementById('outfit-display');
+    const old=document.getElementById('sheet-preview');
+    if(old)old.remove();
+    const box=document.createElement('div');
+    box.className='card';box.id='sheet-preview';
+    box.innerHTML='<b style="font-size:13px">Reference sheet</b>'+
+      '<img src="'+sheet+'" style="width:100%;border-radius:8px;margin:.5rem 0;border:1px solid var(--border)">'+
+      '<p class="muted" style="margin:0 0 .5rem">Press and hold the image above to share it directly — that route always works, even when the button does not.</p>'+
+      '<label style="font-size:12px;display:flex;align-items:center;gap:6px;margin:0 0 .5rem">'+
+      '<input type="checkbox" '+(embedPrompt()?'checked':'')+
+      ' onchange="ls(\'embed-prompt\',this.checked?\'1\':\'0\');S.sheet=null;previewSheet()" style="width:auto;margin:0">'+
+      ' Print the instructions onto the image</label>'+
+      '<div class="row"><button class="sm" onclick="shareSheet()">Send this</button>'+
+      '<button class="sm" onclick="downloadSheet()">Save image</button>'+
+      '<button class="sm" onclick="document.getElementById(\'sheet-preview\').remove()">Close</button></div>';
+    slot.appendChild(box);
+    box.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }catch(e){alert('Could not build the sheet: '+e.message)}
+}
+
+async function shareOutfit(){
+  const o=S.outfits[S.i];if(!o)return;
+  const text=sharePrompt(o);
+  const files=[];
+  const a=dataUrlToFile(S.anchor,'1-person.jpg');
+  if(a)files.push(a);
+  (o.indices||[]).map(itemById).filter(i=>i&&i.image).forEach((i,n)=>{
+    const f=dataUrlToFile(i.image,(n+2)+'-'+String(i.type||'item').replace(/\W+/g,'')+'.jpg');
+    if(f)files.push(f);
+  });
+
+  if(!navigator.share){
+    copyText(text,'No share support in this browser — prompt copied instead.');
+    return;
+  }
+  try{
+    if(files.length&&navigator.canShare&&navigator.canShare({files:files})){
+      await navigator.share({files:files,text:text,title:o.name||'Outfit'});
+      return;
+    }
+    await navigator.share({text:text,title:o.name||'Outfit'});
+  }catch(e){
+    if(e&&e.name==='AbortError')return;
+    copyText(text,'Share failed ('+e.message+') — prompt copied instead.');
+  }
+}
+
+function copyText(t,msg){
+  if(navigator.clipboard&&navigator.clipboard.writeText)
+    navigator.clipboard.writeText(t).then(()=>alert(msg||'Copied.'),()=>alert('Could not copy.'));
+  else alert(msg||'Copy not supported.');
+}
+function copyOutfitPrompt(){
+  const o=S.outfits[S.i];if(!o)return;
+  copyText(sharePrompt(o),'Prompt copied. Paste it into the other app along with the photos.');
+}
+
+function updateSpend(){
+  const el=document.getElementById('outfit-counter');
+  if(!el)return;
+  const n=S.renderCount||0;
+  if(!n)return;
+  const m=S.meta[ls('or-image')];
+  const per=(m&&m.image)||0;
+  const sl=slotOf(ls('or-image'));
+  el.textContent+= ' · '+n+' render'+(n===1?'':'s')+
+    (sl.p==='l'?' (free)':(per?' ≈ $'+(n*per).toFixed(2):''));
+}
+
+function shiftOutfit(d){S.sheet=null;S.i=(S.i+d+S.outfits.length)%S.outfits.length;showOutfit()}
 
 /* ================= Google Drive backup =================
    Uses the drive.file scope, which only grants access to files this app
