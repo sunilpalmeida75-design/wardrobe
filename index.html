@@ -33,6 +33,12 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
 .tile img{width:100%;height:100%;object-fit:cover}
 .tile .badge{position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.62);color:#fff;font-size:8px;padding:1px 2px;text-align:center;line-height:1.2;white-space:nowrap;overflow:hidden}
 .tile .dot{position:absolute;top:3px;right:3px;width:8px;height:8px;border-radius:50%;border:1px solid #fff}
+.tile .sel{position:absolute;top:4px;left:4px;width:20px;height:20px;border-radius:5px;background:rgba(255,255,255,.92);border:1.5px solid #b8b8b8;display:flex;align-items:center;justify-content:center;font-size:13px;color:transparent;line-height:1}
+.tile.on .sel{background:var(--primary);border-color:var(--primary);color:#fff}
+.tile.on{outline:3px solid var(--primary);outline-offset:-3px}
+.tile .trip{position:absolute;bottom:0;right:0;background:#1b6b3a;color:#fff;font-size:9px;padding:1px 4px;border-top-left-radius:5px}
+.actionbar{background:#eef4ff;border:1px solid #cfe0ff;border-radius:8px;padding:.6rem;margin:.5rem 0;font-size:13px}
+.actionbar .row{margin-top:.5rem}
 .tile .dot.new{background:var(--warn)}
 .tile .dot.err{background:var(--danger)}
 .card{background:#f9f9f9;border:1px solid var(--border);border-radius:8px;padding:.9rem;margin-bottom:.75rem}
@@ -84,7 +90,7 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
   <input type="password" id="gkeyai" placeholder="AIza...">
 
   <details style="margin:.5rem 0 1rem">
-    <summary class="muted" style="cursor:pointer">Local models on your own machine (optional)</summary>
+    <summary class="muted" style="cursor:pointer">Advanced — local models on your own machine</summary>
     <div style="padding-top:.6rem">
       <label>Ollama URL <span class="muted">— analyst and stylist</span></label>
       <input type="text" id="ollamaurl" placeholder="http://localhost:11434">
@@ -114,12 +120,28 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
   <div class="header"><h1>Models</h1><p>Type to filter each box</p></div>
   <div class="box info" id="model-count">Loading…</div>
   <label>Analyst — reads each garment photo once <span class="muted">(vision)</span></label>
-  <div class="combo" id="combo-vision"><input type="text" placeholder="Type to filter…" autocomplete="off"><ul></ul></div>
+  <div class="combo" id="combo-vision"><input type="text" placeholder="Filter — use % as a wildcard" autocomplete="off"><ul></ul></div>
   <label>Stylist — builds outfits from saved text <span class="muted">(text only, cheap)</span></label>
-  <div class="combo" id="combo-text"><input type="text" placeholder="Type to filter…" autocomplete="off"><ul></ul></div>
+  <div class="combo" id="combo-text"><input type="text" placeholder="Filter — use % as a wildcard" autocomplete="off"><ul></ul></div>
   <label>Renderer — puts the outfit on your anchor <span class="muted">(image output)</span></label>
-  <div class="combo" id="combo-image"><input type="text" placeholder="Type to filter…" autocomplete="off"><ul></ul></div>
+  <div class="combo" id="combo-image"><input type="text" placeholder="Filter — use % as a wildcard" autocomplete="off"><ul></ul></div>
   <p class="muted" style="margin:-.4rem 0 .75rem" id="price-note"></p>
+  <details style="margin:.25rem 0 1rem">
+    <summary class="muted" style="cursor:pointer">Advanced — a separate key per job</summary>
+    <div style="padding-top:.6rem">
+      <div class="box info" style="font-size:12px">
+        Leave blank to use the main key for that provider. Useful when one account has free-tier
+        quota you want to spend on analysis and styling, and a different account pays for rendering.
+      </div>
+      <label>Analyst key</label>
+      <input type="password" id="key-vision" placeholder="overrides the main key for this job only">
+      <label>Stylist key</label>
+      <input type="password" id="key-text" placeholder="overrides the main key for this job only">
+      <label>Renderer key</label>
+      <input type="password" id="key-image" placeholder="overrides the main key for this job only">
+    </div>
+  </details>
+
   <label>Aspect ratio</label>
   <select id="aspect">
     <option value="3:4">3:4 — 864×1184 (full body)</option>
@@ -186,8 +208,11 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
   <div id="import-progress"></div>
   <div class="grid" id="gallery"></div>
   <div id="more-wrap"></div>
+  <div id="actions"></div>
   <p class="muted" id="count">0 items</p>
   <div id="analyze-note"></div>
+
+  <div id="travel-box"></div>
 
   <label style="margin-top:.8rem">Occasion <span class="muted">(optional — narrows a big wardrobe)</span></label>
   <input type="text" id="brief" placeholder="e.g. office in Dubai summer, weekend dinner">
@@ -272,10 +297,14 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
 
 </div>
 <script>
-const BUILD='v24 · 2026-09-13 · three providers';
-const S={items:[],outfits:[],i:0,renders:{},imageModels:[],meta:{},anchor:'',show:60,dshow:25,filter:'',cancel:false};
+const BUILD='v27 · 2026-09-13 · select + travel mode';
+const S={items:[],outfits:[],i:0,renders:{},imageModels:[],meta:{},anchor:'',show:60,dshow:25,filter:'',cancel:false,sel:new Set()};
 const OR='https://openrouter.ai/api/v1';
-const FRAME='Full-body standing fashion lookbook photograph, framed head to toe. The entire figure is inside the frame with clear empty space above the head and below the feet — do not crop at the ankles, knees, shins or waist. Weight on one leg, shoulders square to camera, arms relaxed at sides, chin level, confident natural posture. Shot at eye level, 85mm lens, evenly lit plain light-grey studio backdrop, sharp focus.';
+const FRAME='Plain full-length photograph of the person, head to toe, entire figure inside the frame with space above the head and below the feet. Do not crop at the ankles, knees, shins or waist. Standing upright, facing the camera, arms at their sides, both feet flat on the floor and visible. Eye-level camera, even indoor lighting, plain light-grey wall behind. A plain documentary photograph of an ordinary person, as taken on a phone.';
+
+/* Appended last, because models weight the end of a prompt most heavily.
+   Everything here is a negative constraint on identity drift. */
+const IDENTITY_LOCK='IDENTITY — THIS OVERRIDES EVERYTHING ABOVE:\nThe face, head shape, jawline, nose, eyes, mouth, hairline, hair colour and length, skin tone, body shape, height and apparent age must be copied exactly from the reference photograph of the person. Do not beautify. Do not smooth or even out skin. Do not slim the face or body. Do not change the age. Do not straighten teeth, brighten eyes, add makeup, or alter the hairstyle. Do not replace the person with a model or a generic figure. If the reference face and the requested outfit conflict, keep the face. Change only the clothing.';
 const MAXEDGE=1024, THUMB=220, JPEGQ=0.82;
 
 const go=id=>{document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active');
@@ -451,12 +480,23 @@ const GEMAPI='https://generativelanguage.googleapis.com/v1beta';
 const PROVNAME={or:'OpenRouter',g:'Google AI Studio',l:'Local'};
 const orKey=()=>ls('or-key'), gaiKey=()=>ls('gai-key');
 const ollamaUrl=()=>ls('ollama-url'), comfyUrl=()=>ls('comfy-url');
-function slotOf(v){
+function slotOf(v,role){
   const i=String(v||'').indexOf('::');
-  return i<0?{p:'or',id:String(v||'')}:{p:v.slice(0,i),id:v.slice(i+2)};
+  const sl=i<0?{p:'or',id:String(v||'')}:{p:v.slice(0,i),id:v.slice(i+2)};
+  sl.role=role||'';
+  return sl;
 }
 const slotLabel=sl=>sl.id?(PROVNAME[sl.p]||sl.p)+' · '+sl.id:'(none)';
-const keyFor=p=>p==='l'?(ollamaUrl()||comfyUrl()||''):(p==='g'?gaiKey():orKey());
+/* A per-job override wins over the shared provider key, so one account's free
+   tier can cover analysis and styling while another pays for rendering. */
+function keyFor(p,role){
+  if(p==='l')return ollamaUrl()||comfyUrl()||'';
+  /* Overrides are stored per job AND per provider, so a key entered while the
+     slot pointed at Google is never sent to OpenRouter. */
+  const ovr=role?ls('key-'+role+'-'+p):'';
+  if(ovr)return ovr;
+  return p==='g'?gaiKey():orKey();
+}
 
 /* Gemini's responseSchema follows an OpenAPI subset and rejects the
    additionalProperties / strict keywords that OpenAI-style schemas carry. */
@@ -473,7 +513,7 @@ function geminiSchema(sc){
 
 async function ask(sl,req,trace){
   if(!sl.id)throw new Error('No model selected for this step.');
-  if(!keyFor(sl.p))throw new Error('No '+(PROVNAME[sl.p]||sl.p)+' key saved.');
+  if(!keyFor(sl.p,sl.role))throw new Error('No '+(PROVNAME[sl.p]||sl.p)+' key saved for this job.');
   if(sl.p==='l')return askLocal(sl,req,trace);
   return sl.p==='g'?askGoogle(sl,req,trace):askOR(sl,req,trace);
 }
@@ -493,7 +533,7 @@ async function askOR(sl,req,trace){
     body.modalities=(meta.out||[]).includes('text')?['image','text']:['image'];
     if(req.aspect)body.image_config={aspect_ratio:req.aspect};
   }
-  const d=await orFetch(body,trace);
+  const d=await orFetch(body,trace,keyFor('or',sl.role));
   const m=((d.choices||[])[0]||{}).message||{};
   let c=m.content;
   if(Array.isArray(c))c=c.map(x=>typeof x==='string'?x:(x&&(x.text||x.content))||'').join('');
@@ -651,7 +691,7 @@ async function askGoogle(sl,req,trace){
     cfg.responseModalities=['TEXT','IMAGE'];
     if(req.aspect)cfg.imageConfig={aspectRatio:req.aspect};
   }
-  const url=GEMAPI+'/models/'+encodeURIComponent(sl.id)+':generateContent?key='+encodeURIComponent(gaiKey());
+  const url=GEMAPI+'/models/'+encodeURIComponent(sl.id)+':generateContent?key='+encodeURIComponent(keyFor('g',sl.role));
   const started=Date.now();
   let r,d;
   try{
@@ -674,12 +714,12 @@ async function askGoogle(sl,req,trace){
           finish:cand.finishReason||''};
 }
 
-async function orFetch(body,trace){
+async function orFetch(body,trace,key){
   const started=Date.now();
   let r,d;
   try{
     r=await fetch(OR+'/chat/completions',{method:'POST',
-      headers:{'Authorization':'Bearer '+orKey(),'Content-Type':'application/json',
+      headers:{'Authorization':'Bearer '+(key||orKey()),'Content-Type':'application/json',
                'HTTP-Referer':location.origin||'https://localhost','X-Title':'Wardrobe AI'},
       body:JSON.stringify(body)});
   }catch(e){
@@ -716,13 +756,23 @@ function extractJSON(t){
 }
 
 /* ============ combobox ============ */
+/* %  is a wildcard meaning "anything in between", so %flash%image% finds
+   models with flash before image anywhere in the id. Without a % it stays a
+   plain substring match. */
+function matchPattern(hay,term){
+  if(term.indexOf('%')<0)return hay.includes(term);
+  const esc=t=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const body=term.split('%').filter(x=>x!=='').map(esc).join('.*');
+  if(!body)return true;
+  return new RegExp(body).test(hay);   // unanchored: matches anywhere
+}
 const COMBO={};
 function makeCombo(elId,ids,selected,onPick){
   const root=document.getElementById(elId),input=root.querySelector('input'),list=root.querySelector('ul');
   COMBO[elId]={ids:ids,value:selected&&ids.includes(selected)?selected:(ids[0]||''),hi:0,hits:ids};
   input.value=COMBO[elId].value;
   const draw=q=>{const term=String(q||'').toLowerCase().trim();
-    const hits=term?ids.filter(i=>i.toLowerCase().includes(term)):ids;
+    const hits=term?ids.filter(i=>matchPattern(i.toLowerCase(),term)):ids;
     COMBO[elId].hits=hits;if(COMBO[elId].hi>=hits.length)COMBO[elId].hi=0;
     list.innerHTML=hits.length?hits.slice(0,120).map((i,n)=>{const m=S.meta[i];
       const price=m&&m.image?('$'+m.image.toFixed(3)+'/img'):(m&&m.prompt?('$'+(m.prompt*1e6).toFixed(2)+'/M'):'');
@@ -844,9 +894,9 @@ async function loadModels(){
   const txt=models.filter(m=>m.out.includes('text')&&!m.out.includes('image')).sort((a,b)=>a.prompt-b.prompt||rank(a,b));
 
   S.imageModels=imgs.map(m=>m.key);
-  makeCombo('combo-vision',vis.map(m=>m.key),ls('or-vision'));
-  makeCombo('combo-text',txt.map(m=>m.key),ls('or-text'));
-  makeCombo('combo-image',S.imageModels,ls('or-image'),priceNote);
+  makeCombo('combo-vision',vis.map(m=>m.key),ls('or-vision'),refreshJobKeys);
+  makeCombo('combo-text',txt.map(m=>m.key),ls('or-text'),refreshJobKeys);
+  makeCombo('combo-image',S.imageModels,ls('or-image'),()=>{priceNote();refreshJobKeys()});
   priceNote();
 
   const counts=['or','g','l'].filter(pp=>models.some(m=>m.p===pp))
@@ -858,11 +908,31 @@ async function loadModels(){
   document.getElementById('aspect').value=aspect();
   document.getElementById('rendersrc').value=renderSrc();
   document.getElementById('rendermode').value=renderMode();
+  refreshJobKeys();
   document.getElementById('concurrency').value=String(concurrency());
   document.getElementById('gclient').value=ls('g-client');
   document.getElementById('bkscope').value=ls('bk-scope')||'full';
   go('s-models');
 }
+/* Each override field belongs to whichever provider that slot currently uses,
+   so the label says which, and the value follows the selection. */
+function refreshJobKeys(){
+  [['vision','combo-vision','Analyst'],['text','combo-text','Stylist'],['image','combo-image','Renderer']]
+    .forEach(([r,combo,label])=>{
+      const e=document.getElementById('key-'+r);
+      if(!e)return;
+      const prov=slotOf(comboValue(combo)||ls('or-'+r)).p;
+      e.value=prov==='l'?'':ls('key-'+r+'-'+prov);
+      e.disabled=(prov==='l');
+      e.placeholder=prov==='l'
+        ? 'local models need no key'
+        : 'optional — overrides your main '+(PROVNAME[prov]||prov)+' key';
+      const lab=e.previousElementSibling;
+      if(lab&&lab.tagName==='LABEL')
+        lab.innerHTML=label+' key <span class="muted">('+(PROVNAME[prov]||prov)+')</span>';
+    });
+}
+
 function priceNote(){
   const m=S.meta[comboValue('combo-image')];
   const el=document.getElementById('price-note');
@@ -880,6 +950,12 @@ function saveModels(){
   ls('or-aspect',document.getElementById('aspect').value);
   ls('or-rendersrc',document.getElementById('rendersrc').value);
   ls('render-mode',document.getElementById('rendermode').value);
+  ['vision','text','image'].forEach(r=>{
+    const e=document.getElementById('key-'+r);
+    if(!e)return;
+    const prov=slotOf(ls('or-'+(r==='vision'?'vision':r))).p;
+    if(prov!=='l')ls('key-'+r+'-'+prov,(e.value||'').trim());
+  });
   ls('or-conc',document.getElementById('concurrency').value);
   ls('g-client',document.getElementById('gclient').value.trim());
   ls('bk-scope',document.getElementById('bkscope').value);
@@ -978,17 +1054,31 @@ function renderCatalog(){
   const g=document.getElementById('gallery');if(!g)return;
   const q=(document.getElementById('search')||{}).value||'';
   const types=['all'].concat([...new Set(S.items.map(i=>i.type).filter(Boolean))].sort());
-  document.getElementById('type-chips').innerHTML=types.map(t=>{
+  let chips=types.map(t=>{
     const n=t==='all'?S.items.length:S.items.filter(i=>i.type===t).length;
     return '<span class="chip'+(S.filter===t||(t==='all'&&!S.filter)?' on':'')+'" onclick="setFilter(\''+(t==='all'?'':t)+'\')">'+t+' '+n+'</span>'}).join('');
+  const tn=tripItems().length;
+  if(tn)chips+='<span class="chip'+(S.filter==='__trip'?' on':'')+'" onclick="setFilter(\'__trip\')">packed '+tn+'</span>';
+  document.getElementById('type-chips').innerHTML=chips;
 
-  let list=S.items.filter(i=>(!S.filter||i.type===S.filter)&&matches(i,q.toLowerCase().trim()));
+  let list=S.items.filter(i=>
+    (!S.filter || (S.filter==='__trip'? !!i.trip : i.type===S.filter))
+    && matches(i,q.toLowerCase().trim()));
   const total=list.length;
   list=list.slice(0,S.show);
-  g.innerHTML=list.map(i=>{
+  g.innerHTML='<div class="tile" onclick="document.getElementById(\'file-in\').click()" title="add photos">＋</div>'+
+    list.map(i=>{
+    const on=S.sel.has(i.id);
     const dot=i.desc?'':(i.failed?'<div class="dot err" title="analysis failed"></div>':'<div class="dot new" title="not described"></div>');
     const badge=i.desc?'<div class="badge">'+[i.color,i.type].filter(Boolean).join(' ')+'</div>':'';
-    return '<div class="tile" onclick="removeItem('+i.id+')" title="tap to remove"><img loading="lazy" src="'+(i.thumb||i.image)+'">'+badge+dot+'</div>'}).join('');
+    const trip=i.trip?'<div class="trip">packed</div>':'';
+    const box='<div class="sel">✓</div>';
+    const img=(i.thumb||i.image)
+      ? '<img loading="lazy" src="'+(i.thumb||i.image)+'">'
+      : '<div style="font-size:10px;color:var(--muted)">no photo</div>';
+    return '<div class="tile'+(on?' on':'')+'" onclick="toggleSel('+i.id+')">'+img+badge+dot+box+trip+'</div>';
+  }).join('');
+  renderActions(list);
   document.getElementById('more-wrap').innerHTML=
     total>S.show?'<button style="width:100%;margin-bottom:.5rem" onclick="S.show+=60;renderCatalog()">Show more ('+(total-S.show)+' hidden)</button>':'';
 
@@ -997,17 +1087,105 @@ function renderCatalog(){
     '<div class="stat"><span>'+S.items.length+' garments saved</span><span>'+showing(total,list.length)+'</span></div>'+
     '<div class="stat"><span>'+done+' described · '+p+' pending'+(f?' · '+f+' failed':'')+'</span><span>~'+estMB()+' MB stored</span></div>';
   const btn=document.getElementById('style-btn');
-  if(btn)btn.textContent=p?('Describe '+p+' pending, then build outfits →'):'Build outfits →';
+  if(btn){
+    const tn=tripItems().length;
+    btn.textContent=p?('Describe '+p+' pending, then build outfits →')
+      :(travelMode()?('Build outfits from '+tn+' packed →'):'Build outfits →');
+  }
   const rb=document.getElementById('retry-btn');
   if(rb){rb.disabled=!f;rb.textContent=f?('Retry '+f+' failed'):'Retry failed'}
   const note=document.getElementById('analyze-note');
   if(note)note.innerHTML=(!p&&!f&&S.items.length)?'<div class="box ok">All described — styling runs on text only.</div>':'';
+  const tb=document.getElementById('travel-box');
+  if(tb){
+    const t=tripItems().length;
+    const on=travelMode();
+    tb.innerHTML='<label style="font-size:13px;font-weight:500;display:flex;align-items:center;gap:8px;margin:.8rem 0 .3rem">'+
+      '<input type="checkbox" '+(on?'checked':'')+' onchange="setTravel(this.checked)" style="width:auto;margin:0">'+
+      'Travel mode — style only what I packed</label>'+
+      '<p class="muted" style="margin:0">'+
+      (t? t+' garment'+(t===1?'':'s')+' packed'+(on?' — outfits will use only these':'')
+        : 'Nothing packed yet. Select garments above and tap "Pack for trip".')+
+      (t?' <button class="sm" style="margin-left:4px" onclick="setFilter(\'__trip\')">Show packed</button>':'')+
+      (t?' <button class="sm" onclick="unpackAll()">Unpack all</button>':'')+'</p>';
+  }
   const sub=document.getElementById('catalog-sub');
   if(sub)sub.textContent=S.items.length+' garments, saved in this browser';
 }
 const showing=(total,shown)=>shown<total?('showing '+shown+' of '+total):(total===S.items.length?'':'showing '+total);
 function estMB(){let b=0;S.items.forEach(i=>{b+=kb(i.image)+kb(i.thumb||'')});return Math.round(b/1024*10)/10}
 function setFilter(t){S.filter=t;S.show=60;renderCatalog()}
+
+/* ---------- selection ---------- */
+function toggleSel(id){
+  if(S.sel.has(id))S.sel.delete(id); else S.sel.add(id);
+  renderCatalog();
+}
+function clearSel(){S.sel.clear();renderCatalog()}
+function selectShown(list){list.forEach(i=>S.sel.add(i.id));renderCatalog()}
+function renderActions(shown){
+  const el=document.getElementById('actions');
+  if(!el)return;
+  const n=S.sel.size;
+  if(!n){
+    el.innerHTML=S.items.length
+      ? '<p class="muted" style="margin:.25rem 0 .5rem">Tap garments to select them, then pack or delete.</p>'
+      : '';
+    return;
+  }
+  const sel=S.items.filter(i=>S.sel.has(i.id));
+  const packed=sel.filter(i=>i.trip).length;
+  el.innerHTML='<div class="actionbar"><b>'+n+' selected</b>'+
+    (packed?' · '+packed+' already packed':'')+
+    '<div class="row">'+
+      '<button class="sm" onclick="packSelected(true)">Pack for trip</button>'+
+      '<button class="sm" onclick="packSelected(false)">Unpack</button>'+
+    '</div><div class="row">'+
+      '<button class="sm" onclick="selectShownIds()">Select all shown</button>'+
+      '<button class="sm" onclick="clearSel()">Clear</button>'+
+      '<button class="sm" style="background:#fdecea;border-color:#f5c2bd;color:#8a1c12" onclick="deleteSelected()">Delete '+n+'</button>'+
+    '</div></div>';
+}
+function selectShownIds(){
+  const q=(document.getElementById('search')||{}).value||'';
+  S.items.filter(i=>(!S.filter||i.type===S.filter)&&matches(i,q.toLowerCase().trim()))
+    .slice(0,S.show).forEach(i=>S.sel.add(i.id));
+  renderCatalog();
+}
+async function deleteSelected(){
+  const n=S.sel.size;if(!n)return;
+  const described=S.items.filter(i=>S.sel.has(i.id)&&i.desc).length;
+  if(!confirm('Delete '+n+' garment'+(n===1?'':'s')+'?'+
+    (described?'\n'+described+' of them have AI descriptions that would have to be regenerated.':'')))return;
+  for(const id of [...S.sel])await dbDel('items',id);
+  S.items=S.items.filter(i=>!S.sel.has(i.id));
+  S.sel.clear();S.renders={};S.outfits=[];
+  renderCatalog();scheduleBackup();
+}
+async function unpackAll(){
+  const t=tripItems();
+  if(!t.length)return;
+  if(!confirm('Unpack all '+t.length+' garments?'))return;
+  for(const it of t){delete it.trip;await dbPut('items',it)}
+  if(travelMode())ls('travel','0');
+  S.outfits=[];renderCatalog();scheduleBackup();
+}
+async function packSelected(on){
+  for(const id of [...S.sel]){
+    const it=S.items.find(x=>x.id===id);
+    if(!it)continue;
+    if(on)it.trip=true; else delete it.trip;
+    await dbPut('items',it);
+  }
+  S.sel.clear();renderCatalog();scheduleBackup();
+}
+const tripItems=()=>S.items.filter(i=>i.trip);
+const travelMode=()=>ls('travel')==='1';
+function setTravel(on){
+  ls('travel',on?'1':'0');
+  S.outfits=[];S.renders={};
+  renderCatalog();
+}
 function setMode(m){ls('mode',m);
   const a=document.getElementById('mode-strict'),b=document.getElementById('mode-suggest');
   if(a&&b){a.classList.toggle('on',m==='strict');b.classList.toggle('on',m==='suggest')}}
@@ -1027,7 +1205,7 @@ const DESCRIBE=
  '"desc":"two to three sentences, rich enough to redraw the garment"}';
 
 async function describeItem(it){
-  const sl=slotOf(ls('or-vision'));
+  const sl=slotOf(ls('or-vision'),'vision');
   const variants=[{json:ITEM_SCHEMA},{json:true},{}];
   let last='';
   for(const v of variants){
@@ -1158,24 +1336,35 @@ async function runFlow(){
   if(!S.anchor){alert('Set an anchor photo first.');return}
   if(!ls('or-text')){alert('Pick your models first.');go('s-models');return}
 
-  if(pending().length){
+  const toDescribe=travelMode()?pending().filter(i=>i.trip):pending();
+  if(toDescribe.length){
     if(!ls('or-vision')){alert('Pick an analyst model first.');go('s-models');return}
     document.getElementById('work-title').textContent='Describing garments';
     document.getElementById('work-sub').textContent=slotLabel(slotOf(ls('or-vision')))+' · '+concurrency()+' at a time';
     go('s-working');
-    const r=await runQueue(pending());
+    const r=await runQueue(toDescribe);
     renderCatalog();
     if(r.cancelled)return;
     if(!r.done&&r.failed){alert('Could not describe any garment. Try a different analyst.');go('s-catalog');return}
   }
 
-  const described=S.items.filter(i=>i.desc);
+  const travel=travelMode();
+  let described=S.items.filter(i=>i.desc);
+  if(travel){
+    described=described.filter(i=>i.trip);
+    if(described.length<2){
+      alert('Travel mode is on but only '+described.length+' packed garment'+
+        (described.length===1?' has':'s have')+' a description.\n\nPack more, or turn travel mode off.');
+      go('s-catalog');return;
+    }
+  }
   if(described.length<2){alert('Need at least 2 described garments.');go('s-catalog');return}
 
   const strict=mode()==='strict';
   const brief=(document.getElementById('brief')||{}).value||'';
   document.getElementById('work-title').textContent='Styling';
-  document.getElementById('work-sub').textContent=(strict?'Strict':'Suggestion')+' — '+slotLabel(slotOf(ls('or-text')));
+  document.getElementById('work-sub').textContent=(strict?'Strict':'Suggestion')+
+    (travel?' · travel ('+described.length+' packed)':'')+' — '+slotLabel(slotOf(ls('or-text'),'text'));
   document.getElementById('work-status').textContent='Styling '+described.length+' garments…';
   document.getElementById('work-bar').style.width='60%';
   document.getElementById('work-detail').textContent='Text only — no photos sent.';
@@ -1183,7 +1372,7 @@ async function runFlow(){
 
   const order=described.map(i=>i.id);
   const lines=described.map((i,n)=>compactLine(i,n)).join('\n');
-  const sl=slotOf(ls('or-text'));
+  const sl=slotOf(ls('or-text'),'text');
   const prompt=stylePrompt(strict,lines,brief,described.length);
   const plain='Wardrobe:\n'+lines+'\n\nPick 3 outfits. Answer with only a JSON array, nothing else:\n'+
     '[{"name":"Look 1","indices":[0,1,2],"additions":[],"why":"","occasion":""}]';
@@ -1249,7 +1438,7 @@ function copyTrace(){
 }
 
 function ensureShoes(outfits){
-  const shoes=S.items.filter(i=>i.type==='shoes'&&i.desc);
+  const shoes=S.items.filter(i=>i.type==='shoes'&&i.desc&&(!travelMode()||i.trip));
   if(!shoes.length)return outfits;
   return outfits.map((o,n)=>{const idx=o.indices||[];
     if(idx.map(itemById).filter(Boolean).some(i=>i.type==='shoes'))return o;
@@ -1275,7 +1464,7 @@ function outfitInstruction(o,usePhotos){
     return (hasPhoto?'Reference image '+refN:'Garment '+(n+1))+': '+(i.desc||i.detail||i.type);
   }).join('\n');
   const head=(usePhotos?'Reference image 1':'The reference image')+
-    ' is the person. Keep their face, hair, body proportions and skin tone exactly as shown — this must be recognisably the same individual.\n\n';
+    ' is the person. This exact person must appear in the output, unchanged.\n\n';
   let extra='';
   if(strict){
     const subs=substitutions(worn);
@@ -1292,11 +1481,11 @@ function outfitInstruction(o,usePhotos){
   }
   return head+lines+'\n\nGenerate one new photograph of the person wearing ALL '+worn.length+
     ' of these garments at the same time as one complete outfit. Every garment must be visible and worn. Reproduce each garment exactly as described.'+
-    extra+'\n\n'+FRAME;
+    extra+'\n\n'+FRAME+'\n\n'+IDENTITY_LOCK;
 }
 async function renderOutfit(o,slotId,force){
   const usePhotos=renderSrc()==='photos';
-  const sl=slotOf(ls('or-image'));
+  const sl=slotOf(ls('or-image'),'image');
   const cacheKey=mode()+'|'+renderSrc()+'|'+sl.p+'|'+(o.name||'o')+'|'+(o.indices||[]).join(',');
   const slot=()=>document.getElementById(slotId);
   if(!sl.id){if(slot())slot().innerHTML='<p class="muted" style="padding:1rem">No renderer selected.</p>';return}
@@ -1304,7 +1493,14 @@ async function renderOutfit(o,slotId,force){
 
   const parts=[{image:S.anchor}];
   if(usePhotos)(o.indices||[]).map(itemById).filter(i=>i&&i.image).forEach(i=>parts.push({image:i.image}));
-  parts.push({text:outfitInstruction(o,usePhotos)});
+  let instr=outfitInstruction(o,usePhotos);
+  /* A fresh variation tag on each re-render, so asking again produces a
+     different attempt rather than the same output back. */
+  if(force){
+    S.vary=(S.vary||0)+1;
+    instr+='\n\nVariation '+S.vary+': a different shot of the same person in the same outfit — change nothing about their face or the clothes.';
+  }
+  parts.push({text:instr});
 
   const trace=[];
   try{
@@ -1341,12 +1537,12 @@ function showOutfit(force){
   const o=S.outfits[S.i];if(!o)return;
   const strict=mode()==='strict';
   const rm=renderMode();
-  const sl=slotOf(ls('or-image'));
+  const sl=slotOf(ls('or-image'),'image');
   const cacheKey=mode()+'|'+renderSrc()+'|'+sl.p+'|'+(o.name||'o')+'|'+(o.indices||[]).join(',');
   const cached=S.renders[cacheKey];
 
   document.getElementById('outfit-counter').textContent=
-    'Outfit '+(S.i+1)+' of '+S.outfits.length+' — '+(strict?'strict':'suggestion');
+    'Outfit '+(S.i+1)+' of '+S.outfits.length+' — '+(strict?'strict':'suggestion')+(travelMode()?' · travel':'');
 
   const pics=(o.indices||[]).map(itemById).filter(Boolean);
   const subs=strict?substitutions(pics):[];
@@ -1413,7 +1609,7 @@ function sharePrompt(o,oneSheet){
   if(adds.length)t+='\n\nAdd these complementary pieces: '+adds.join('; ')+'.';
   if(subs.length)t+='\n\n'+subs.map(x=>x.text).join('\n');
   if(strict)t+='\n\nUse nothing beyond what is described here. Do not add jackets, belts, bags, jewellery or hats that are not listed.';
-  t+='\n\nThe person must wear ALL of these garments together as one complete outfit, each reproduced faithfully in colour, pattern and cut.\n\n'+FRAME;
+  t+='\n\nThe person must wear ALL of these garments together as one complete outfit, each reproduced faithfully in colour, pattern and cut.\n\n'+FRAME+'\n\n'+IDENTITY_LOCK;
   return t;
 }
 
@@ -1714,6 +1910,7 @@ function backupPayload(){
     items:S.items.map(i=>{
       const o={id:i.id,added:i.added};
       ['type','color','style','fit','pattern','material','detail','desc'].forEach(k=>{if(i[k])o[k]=i[k]});
+      if(i.trip)o.trip=true;
       if(!light){o.image=i.image;o.thumb=i.thumb}
       return o;
     })
@@ -1807,7 +2004,7 @@ function scheduleBackup(){
    needs no garment photo. So keep them rather than discarding them. */
 async function mergeItems(items){
   let added=0,merged=0,noPhoto=0;
-  const FIELDS=['type','color','style','fit','pattern','material','detail','desc'];
+  const FIELDS=['type','color','style','fit','pattern','material','detail','desc','trip'];
   for(const it of items){
     const existing=it.id!==undefined?S.items.find(x=>x.id===it.id):null;
     if(existing){
