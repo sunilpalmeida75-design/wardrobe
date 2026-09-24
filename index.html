@@ -90,8 +90,42 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
   <input type="password" id="gkeyai" placeholder="AIza...">
 
   <details style="margin:.5rem 0 1rem">
-    <summary class="muted" style="cursor:pointer">Advanced — local models on your own machine</summary>
+    <summary class="muted" style="cursor:pointer">Advanced</summary>
     <div style="padding-top:.6rem">
+      <b style="font-size:13px">A separate key per job</b>
+
+      <div class="box info" style="font-size:12px">
+        Optional. Blank falls back to the main key above. Useful when one account has free-tier
+        quota you want spent on analysis and styling, and another pays for rendering.
+      </div>
+
+      <div class="card" style="padding:.7rem">
+        <b style="font-size:13px">Analyst</b> <span class="muted" id="act-vision"></span>
+        <label style="margin-top:.4rem">Google AI Studio key</label>
+        <input type="password" id="key-vision-g" placeholder="blank = main Google key">
+        <label>OpenRouter key</label>
+        <input type="password" id="key-vision-or" placeholder="blank = main OpenRouter key" style="margin-bottom:0">
+      </div>
+
+      <div class="card" style="padding:.7rem">
+        <b style="font-size:13px">Stylist</b> <span class="muted" id="act-text"></span>
+        <label style="margin-top:.4rem">Google AI Studio key</label>
+        <input type="password" id="key-text-g" placeholder="blank = main Google key">
+        <label>OpenRouter key</label>
+        <input type="password" id="key-text-or" placeholder="blank = main OpenRouter key" style="margin-bottom:0">
+      </div>
+
+      <div class="card" style="padding:.7rem">
+        <b style="font-size:13px">Renderer</b> <span class="muted" id="act-image"></span>
+        <label style="margin-top:.4rem">Google AI Studio key</label>
+        <input type="password" id="key-image-g" placeholder="blank = main Google key">
+        <label>OpenRouter key</label>
+        <input type="password" id="key-image-or" placeholder="blank = main OpenRouter key" style="margin-bottom:0">
+      </div>
+    
+      <hr style="border:none;border-top:1px solid var(--border);margin:1rem 0">
+      <b style="font-size:13px">Local models on your own machine</b>
+
       <label>Ollama URL <span class="muted">— analyst and stylist</span></label>
       <input type="text" id="ollamaurl" placeholder="http://localhost:11434">
       <label>ComfyUI URL <span class="muted">— renderer</span></label>
@@ -126,21 +160,13 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
   <label>Renderer — puts the outfit on your anchor <span class="muted">(image output)</span></label>
   <div class="combo" id="combo-image"><input type="text" placeholder="Filter — use % as a wildcard" autocomplete="off"><ul></ul></div>
   <p class="muted" style="margin:-.4rem 0 .75rem" id="price-note"></p>
-  <details style="margin:.25rem 0 1rem">
-    <summary class="muted" style="cursor:pointer">Advanced — a separate key per job</summary>
-    <div style="padding-top:.6rem">
-      <div class="box info" style="font-size:12px">
-        Leave blank to use the main key for that provider. Useful when one account has free-tier
-        quota you want to spend on analysis and styling, and a different account pays for rendering.
-      </div>
-      <label>Analyst key</label>
-      <input type="password" id="key-vision" placeholder="overrides the main key for this job only">
-      <label>Stylist key</label>
-      <input type="password" id="key-text" placeholder="overrides the main key for this job only">
-      <label>Renderer key</label>
-      <input type="password" id="key-image" placeholder="overrides the main key for this job only">
-    </div>
-  </details>
+  <label>Pose</label>
+  <select id="pose">
+    <option value="relaxed">Relaxed — weight back, body slightly angled</option>
+    <option value="contrapposto">Contrapposto — hip tilt, torso turned</option>
+    <option value="walking">Walking toward camera</option>
+    <option value="plain">Plain — square to camera, arms down</option>
+  </select>
 
   <label>Aspect ratio</label>
   <select id="aspect">
@@ -297,14 +323,30 @@ label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
 
 </div>
 <script>
-const BUILD='v27 · 2026-09-13 · select + travel mode';
+const BUILD='v30 · 2026-09-13 · pose + expression';
 const S={items:[],outfits:[],i:0,renders:{},imageModels:[],meta:{},anchor:'',show:60,dshow:25,filter:'',cancel:false,sel:new Set()};
 const OR='https://openrouter.ai/api/v1';
-const FRAME='Plain full-length photograph of the person, head to toe, entire figure inside the frame with space above the head and below the feet. Do not crop at the ankles, knees, shins or waist. Standing upright, facing the camera, arms at their sides, both feet flat on the floor and visible. Eye-level camera, even indoor lighting, plain light-grey wall behind. A plain documentary photograph of an ordinary person, as taken on a phone.';
+const POSES={
+  relaxed:'Standing with weight on the back leg, the front foot turned slightly outward, body angled about fifteen degrees off camera with the face turned back to the lens. One hand loose at the side, the other resting lightly in a pocket or at the hip. Shoulders down and level, chin slightly forward and level. Relaxed and natural, not stiff, not posed hard.',
+  plain:'Standing upright and square to the camera, arms loose at the sides, feet slightly apart. A plain straightforward stance.',
+  walking:'Caught mid-step walking slowly toward the camera, one foot forward and flat, arms swinging naturally, body relaxed and in motion.',
+  contrapposto:'Standing with weight on one leg and the other knee soft, hips tilted slightly, torso turned a little away from the camera, head facing the lens. Arms relaxed, one elbow slightly bent.'
+};
+const EXPRESSION='A slight closed-mouth smile — lips together, corners of the mouth just lifted, no teeth showing. Eyes looking directly at the camera, relaxed, not wide.';
+
+const FRAME_BASE='Full-length photograph of the person, head to toe, the entire figure inside the frame with space above the head and below the feet. Do not crop at the ankles, knees, shins or waist. Eye-level camera, soft even lighting, plain uncluttered light-grey background. A clean, well-taken photograph of a real person.';
+
+function framing(){
+  const key=ls('pose')||'relaxed';
+  return FRAME_BASE+'\n\nPose: '+(POSES[key]||POSES.relaxed)+'\n\nExpression: '+EXPRESSION;
+}
 
 /* Appended last, because models weight the end of a prompt most heavily.
    Everything here is a negative constraint on identity drift. */
-const IDENTITY_LOCK='IDENTITY — THIS OVERRIDES EVERYTHING ABOVE:\nThe face, head shape, jawline, nose, eyes, mouth, hairline, hair colour and length, skin tone, body shape, height and apparent age must be copied exactly from the reference photograph of the person. Do not beautify. Do not smooth or even out skin. Do not slim the face or body. Do not change the age. Do not straighten teeth, brighten eyes, add makeup, or alter the hairstyle. Do not replace the person with a model or a generic figure. If the reference face and the requested outfit conflict, keep the face. Change only the clothing.';
+/* Appended last, because models weight the end of a prompt most heavily.
+   The expression carve-out is explicit — without it the lock and the smile
+   contradict each other and the model picks one at random. */
+const IDENTITY_LOCK='IDENTITY — THIS OVERRIDES EVERYTHING ABOVE:\nThe face, head shape, jawline, nose, eyes, eyebrows, hairline, hair colour and length, skin tone and texture, body shape, height and apparent age must be copied from the reference photograph of the person. Do not beautify. Do not smooth, even out or lighten the skin. Do not slim the face or body. Do not change the age. Do not add makeup. Do not change the hairstyle. Do not replace the person with a model or a generic figure.\nThe ONLY permitted change to the face is the expression: the mouth may move into the slight closed-mouth smile described above, and the eyes may relax with it. Every other feature stays exactly as in the reference. If the face and the requested pose conflict, keep the face.';
 const MAXEDGE=1024, THUMB=220, JPEGQ=0.82;
 
 const go=id=>{document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active');
@@ -440,6 +482,7 @@ async function boot(){
   if(bs)bs.textContent='Build '+BUILD;
   if(orKey())document.getElementById('orkey').value=orKey();
   if(gaiKey())document.getElementById('gkeyai').value=gaiKey();
+  refreshJobKeys();
   document.getElementById('ollamaurl').value=ollamaUrl();
   document.getElementById('comfyurl').value=comfyUrl();
   document.getElementById('comfyflow').value=ls('comfy-flow');
@@ -805,6 +848,12 @@ async function loadModels(){
   ls('ollama-url',val('ollamaurl').replace(/\/$/,''));
   ls('comfy-url',val('comfyurl').replace(/\/$/,''));
   ls('comfy-flow',document.getElementById('comfyflow').value||'');
+  ['vision','text','image'].forEach(r=>{
+    ['g','or'].forEach(prov=>{
+      const e=document.getElementById('key-'+r+'-'+prov);
+      if(e)ls('key-'+r+'-'+prov,(e.value||'').trim());
+    });
+  });
 
   const configured=[
     k&&'OpenRouter', g&&'Google', ls('ollama-url')&&'Ollama', ls('comfy-url')&&'ComfyUI'
@@ -908,6 +957,7 @@ async function loadModels(){
   document.getElementById('aspect').value=aspect();
   document.getElementById('rendersrc').value=renderSrc();
   document.getElementById('rendermode').value=renderMode();
+  document.getElementById('pose').value=ls('pose')||'relaxed';
   refreshJobKeys();
   document.getElementById('concurrency').value=String(concurrency());
   document.getElementById('gclient').value=ls('g-client');
@@ -917,20 +967,24 @@ async function loadModels(){
 /* Each override field belongs to whichever provider that slot currently uses,
    so the label says which, and the value follows the selection. */
 function refreshJobKeys(){
-  [['vision','combo-vision','Analyst'],['text','combo-text','Stylist'],['image','combo-image','Renderer']]
-    .forEach(([r,combo,label])=>{
-      const e=document.getElementById('key-'+r);
-      if(!e)return;
-      const prov=slotOf(comboValue(combo)||ls('or-'+r)).p;
-      e.value=prov==='l'?'':ls('key-'+r+'-'+prov);
-      e.disabled=(prov==='l');
-      e.placeholder=prov==='l'
-        ? 'local models need no key'
-        : 'optional — overrides your main '+(PROVNAME[prov]||prov)+' key';
-      const lab=e.previousElementSibling;
-      if(lab&&lab.tagName==='LABEL')
-        lab.innerHTML=label+' key <span class="muted">('+(PROVNAME[prov]||prov)+')</span>';
+  [['vision','combo-vision'],['text','combo-text'],['image','combo-image']].forEach(([r,combo])=>{
+    ['g','or'].forEach(prov=>{
+      const e=document.getElementById('key-'+r+'-'+prov);
+      if(e)e.value=ls('key-'+r+'-'+prov);
     });
+    const chosen=comboValue(combo)||ls('or-'+r);
+    const prov=chosen?slotOf(chosen).p:'';
+    const tag=document.getElementById('act-'+r);
+    if(tag)tag.textContent=!chosen
+      ? '— no model chosen yet'
+      : (prov==='l' ? '— using a local model, no key needed'
+                    : '— currently using '+(PROVNAME[prov]||prov));
+    /* dim whichever field is not in play, without hiding it */
+    ['g','or'].forEach(pp=>{
+      const e=document.getElementById('key-'+r+'-'+pp);
+      if(e)e.style.opacity=(!prov||pp===prov)?'1':'0.55';
+    });
+  });
 }
 
 function priceNote(){
@@ -950,12 +1004,8 @@ function saveModels(){
   ls('or-aspect',document.getElementById('aspect').value);
   ls('or-rendersrc',document.getElementById('rendersrc').value);
   ls('render-mode',document.getElementById('rendermode').value);
-  ['vision','text','image'].forEach(r=>{
-    const e=document.getElementById('key-'+r);
-    if(!e)return;
-    const prov=slotOf(ls('or-'+(r==='vision'?'vision':r))).p;
-    if(prov!=='l')ls('key-'+r+'-'+prov,(e.value||'').trim());
-  });
+  ls('pose',document.getElementById('pose').value);
+
   ls('or-conc',document.getElementById('concurrency').value);
   ls('g-client',document.getElementById('gclient').value.trim());
   ls('bk-scope',document.getElementById('bkscope').value);
@@ -1481,7 +1531,7 @@ function outfitInstruction(o,usePhotos){
   }
   return head+lines+'\n\nGenerate one new photograph of the person wearing ALL '+worn.length+
     ' of these garments at the same time as one complete outfit. Every garment must be visible and worn. Reproduce each garment exactly as described.'+
-    extra+'\n\n'+FRAME+'\n\n'+IDENTITY_LOCK;
+    extra+'\n\n'+framing()+'\n\n'+IDENTITY_LOCK;
 }
 async function renderOutfit(o,slotId,force){
   const usePhotos=renderSrc()==='photos';
@@ -1609,7 +1659,7 @@ function sharePrompt(o,oneSheet){
   if(adds.length)t+='\n\nAdd these complementary pieces: '+adds.join('; ')+'.';
   if(subs.length)t+='\n\n'+subs.map(x=>x.text).join('\n');
   if(strict)t+='\n\nUse nothing beyond what is described here. Do not add jackets, belts, bags, jewellery or hats that are not listed.';
-  t+='\n\nThe person must wear ALL of these garments together as one complete outfit, each reproduced faithfully in colour, pattern and cut.\n\n'+FRAME+'\n\n'+IDENTITY_LOCK;
+  t+='\n\nThe person must wear ALL of these garments together as one complete outfit, each reproduced faithfully in colour, pattern and cut.\n\n'+framing()+'\n\n'+IDENTITY_LOCK;
   return t;
 }
 
